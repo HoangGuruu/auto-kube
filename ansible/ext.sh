@@ -12,13 +12,13 @@ remotes=$(cat $inv_path | grep ansible_host: | sed -E "s/[ $(echo -e '\t')]*ansi
 user=$(cat $inv_path | grep ansible_user: | head -1 | sed -E "s/[ $(echo -e '\t')]*ansible_user: (.*)/\1/")
 
 # Copy the ssh public key to the remotes
-alias my-ssh-copy='ssh-copy-id -o ConnectionAttempts=1 -o ConnectTimeout=1'
-for remote in $remotes; do
-    echo "Copying ssh key to $remote ..."
-    my-ssh-copy $user@$remote
-done
-unalias my-ssh-copy
+# alias my-ssh-copy='ssh-copy-id -o ConnectionAttempts=1 -o ConnectTimeout=1'
+# for remote in $remotes; do
+#     echo "Copying ssh key to $remote ..."
+#     my-ssh-copy $user@$remote
+# done
+# unalias my-ssh-copy
 
 # Run ansible scripts
-ansible-playbook -i $inv_path -K playbooks/ext.yaml
+ansible-playbook -i $inv_path playbooks/ext.yaml --private-key=~/.ssh/ansible_key
 
