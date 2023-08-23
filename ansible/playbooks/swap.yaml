@@ -1,0 +1,16 @@
+---
+# Disable swapping on all nodes
+- hosts: cluster
+  gather_facts: no
+  tasks:
+  - name: Check swapping
+    ansible.builtin.shell: cat /etc/fstab | grep swap
+    register: fstab_swap
+
+  - name: Disable swapping
+    become: yes
+    ansible.builtin.shell: |
+      sed -i 's/\/swap/#\/swap/' /etc/fstab
+      swapoff -a
+    when: fstab_swap['stdout'].find("#/swap") == -1
+  

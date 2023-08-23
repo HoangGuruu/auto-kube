@@ -1,0 +1,64 @@
+---
+# Set containerd
+- hosts: cluster
+  gather_facts: yes
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Make sure the dir /etc/containerd exists
+    become: yes 
+    ansible.builtin.file:
+      path: /etc/containerd
+      state: directory
+
+  - name: Make /etc/containerd/config.toml
+    become: yes 
+    ansible.builtin.shell: containerd config default | tee /etc/containerd/config.toml
+
+  - name: Configure containerd
+    become: yes 
+    ansible.builtin.shell: |
+      sed -i "s#sandbox_image = \"#sandbox_image = \"{{ harbor['prj'] }}/#" /etc/containerd/config.toml
+      sed -i 's#config_path = "#config_path = "/etc/containerd/certs.d#' /etc/containerd/config.toml
+      sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+
+  - name: "Create /etc/containerd/certs.d/{{ harbor['external'] }}/hosts.toml"
+    become: yes
+    ansible.builtin.blockinfile:
+      path: "/etc/containerd/certs.d/{{ harbor['external'] }}/hosts.toml"
+      create: yes
+      block: |
+        server = "https://{{ harbor['external'] }}"
+
+        [host."https://{{ harbor['external'] }}"]
+          ca = "/etc/containerd/certs.d/{{ harbor['external'] }}/harbor.crt"
+
+  - name: Get the harbor cert
+    ansible.builtin.shell: >
+      openssl s_client -connect {{ harbor['external'] }}:443 < /dev/null 2> /dev/null | \
+      sed -En '/^-----BEGIN CERTIFICATE-----$/,/^-----END CERTIFICATE-----$/p' > {{ ansible_env.HOME }}/harbor.crt
+
+  - name: "Copy crt to /etc/containerd/certs.d/{{ harbor['external'] }}/"
+    become: yes
+    ansible.builtin.copy:
+      remote_src: yes
+      src: "{{ ansible_env.HOME }}/harbor.crt"
+      dest: "/etc/containerd/certs.d/{{ harbor['external'] }}/"
+   
+  - name: Copy cert into the docker dir
+    become: yes
+    ansible.builtin.copy:
+      remote_src: yes
+      src: "{{ ansible_env.HOME }}/harbor.crt"
+      dest: "/etc/docker/certs.d/{{ harbor['external'] }}/"
+    when: inventory_hostname == 'cp0'
+
+  - name: Remove temporary crt
+    ansible.builtin.file:
+      path: "{{ ansible_env.HOME }}/harbor.crt"
+      state: absent
+
+  - name: Restart containerd
+    become: yes
+    ansible.builtin.shell: systemctl restart containerd
+

@@ -1,0 +1,77 @@
+---
+# For synchronize
+# Generate ssh key
+- hosts: "{{ key_sender }}"
+  gather_facts: no
+  tasks:
+  - name: Check ssh key from sender
+    ansible.builtin.find:
+      path: ~/.ssh
+      patterns: 'id_ed25519,id_ed25519.pub'
+    register: ssh_keys
+
+  - name: Create ssh key
+    ansible.builtin.shell: ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ''
+    when: ssh_keys.matched != 2
+
+  - name: Copy ssh key to control machine
+    ansible.builtin.fetch:
+      src: ~/.ssh/id_ed25519.pub
+      dest: ./
+      flat: yes
+
+# Copy ssh key
+- hosts: "{{ key_receiver }}"
+  gather_facts: no
+  tasks:
+  - name: Copy ssh key to nodes
+    ansible.builtin.copy:
+      src: ./id_ed25519.pub
+      dest: ~/.ssh/id_ed25519.pub.tmp
+
+  - name: Check ssh key
+    ansible.builtin.shell: cat ~/.ssh/authorized_keys | grep "$(cat ~/.ssh/id_ed25519.pub.tmp)"
+    register: grep_key
+    failed_when: grep_key.rc == 2
+
+  - name: Append ssh key to authorized_keys
+    ansible.builtin.shell: cat ~/.ssh/id_ed25519.pub.tmp >> ~/.ssh/authorized_keys
+    when: grep_key.rc == 1
+
+  - ansible.builtin.file:
+      path: ~/.ssh/id_ed25519.pub.tmp
+      state: absent
+
+# Remove ssh key from control machine
+- hosts: localhost
+  gather_facts: no
+  tasks:
+  - name: Remove ssh key from control machine
+    ansible.builtin.file:
+      path: ./id_ed25519.pub
+      state: absent
+
+# Create known hosts file
+- hosts: "{{ key_sender }}"
+  gather_facts: no
+  tasks:
+  - name: Make sure ~/.ssh/known_hosts exists
+    ansible.builtin.stat:
+      path: ~/.ssh/known_hosts
+    register: known
+
+  - ansible.builtin.file:
+      path: ~/.ssh/known_hosts
+      state: touch
+    when: not known['stat']['exists']
+
+  - name: Check key in the known_hosts
+    ansible.builtin.shell: ssh-keygen -F "{{ hostvars[item]['ansible_host'] }}" 2>/dev/null
+    loop: "{{ query('inventory_hostnames', key_receiver) }}"
+    register: keys
+    failed_when: keys.rc == 255
+
+  - ansible.builtin.shell: ssh-keyscan -H -t ed25519 "{{ hostvars[item['item']]['ansible_host'] }}" >> ~/.ssh/known_hosts
+    when: item.rc == 1
+    loop: "{{ keys.results }}"
+

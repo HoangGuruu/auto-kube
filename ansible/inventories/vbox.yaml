@@ -1,0 +1,50 @@
+---
+# Ansible inventory
+dns:
+  hosts:
+    dns0:
+      ansible_host: 192.168.0.3
+      ansible_user: kube
+
+proxy:
+  hosts:
+    proxy0:
+      ansible_host: 192.168.0.3
+      ansible_user: kube
+
+registry:
+  hosts:
+    registry0:
+      ansible_host: 192.168.0.3
+      ansible_user: kube
+
+git:
+  hosts:
+    git0:
+      ansible_host: 192.168.0.3
+      ansible_user: kube
+
+ci:
+  hosts:
+    ci0:
+      ansible_host: 192.168.0.3
+      ansible_user: kube
+
+cluster:
+  hosts:
+    cp0:
+      ansible_host: 192.168.0.50
+      ansible_user: kube
+    node1:
+      ansible_host: 192.168.0.51
+      ansible_user: kube
+
+all:
+  children:
+    dns:
+    proxy:
+    registry:
+    git:
+    ci:
+    cluster:
+

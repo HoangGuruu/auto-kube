@@ -1,0 +1,316 @@
+---
+- hosts: ci0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ jenkins['dir'] }}/certs"
+  - cn: "{{ jenkins['domain'] }}"
+  - alt_names: "{{ jenkins['alt_names'] }}"
+  tasks:
+  - name: Generate cert for jenkins
+    ansible.builtin.import_tasks: cert.yaml
+
+- hosts: ci0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ jenkins['dir'] }}"
+  tasks:
+  - name: Make sure the dirs exist
+    ansible.builtin.file:
+      path: "{{ item }}"
+      state: directory
+    loop:
+    - "{{ dir }}/jenkins/data"
+    - "{{ dir }}/jenkins/docker-certs"
+    - "{{ dir }}/jenkins/docker-data"
+    - "{{ dir }}/jenkins/docker-registry-cert"
+    - "{{ dir }}/jenkins/keystore"
+    - "{{ dir }}/nginx/certs"
+    - "{{ dir }}/nginx/tmp"
+
+  - name: Copy cert into the jenkins proxy dir
+    ansible.builtin.copy:
+      remote_src: yes
+      src: "{{ item }}"
+      dest: "{{ dir }}/nginx/certs/"
+    loop:
+    - "{{ dir }}/certs/cert.crt"
+    - "{{ dir }}/certs/cert.key"
+
+  - name: Make nginx.conf
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/nginx/nginx.conf"
+      create: yes
+      block: |
+        user              nginx;
+        worker_processes  auto;
+        error_log         /var/log/nginx/error.log notice;
+        pid               /tmp/nginx.pid;
+
+        events {
+          worker_connections  1024;
+        }
+
+        http {
+          client_body_temp_path  /tmp/client_temp;
+          proxy_temp_path        /tmp/proxy_temp_path;
+          fastcgi_temp_path      /tmp/fastcgi_temp;
+          uwsgi_temp_path        /tmp/uwsgi_temp;
+          scgi_temp_path         /tmp/scgi_temp;
+
+          upstream jenkins_backend {
+            server  jenkins:8080;
+          }   
+
+          server {
+            listen               {{ jenkins['port'] }} ssl;
+            keepalive_timeout    70;
+            ssl_session_cache    shared:SSL:10m;
+            ssl_session_timeout  10m;
+            ssl_certificate      /etc/nginx/certs/cert.crt;
+            ssl_certificate_key  /etc/nginx/certs/cert.key;
+            ssl_protocols        TLSv1.2 TLSv1.3;
+            ssl_ciphers          TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384; # Reference: https://wiki.mozilla.org/Security/Server_Side_TLS
+ 
+            location / { 
+              proxy_pass        http://jenkins_backend;
+              proxy_set_header  Host $host;
+              proxy_set_header  X-Real-IP $remote_addr;
+              proxy_set_header  X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header  X-Forwarded-Proto $scheme;
+              proxy_redirect    ~(https?://{{ jenkins['domain'] }})(/.*)$ $1:$server_port$2; # Add port number in redirect location for local access
+            }
+          }   
+        }
+
+  - name: Make start script
+    ansible.builtin.copy:
+      dest: "{{ dir }}/jenkins/wait-and-run.sh"
+      mode: 0777
+      content: |
+        #!/bin/sh
+        touch /var/jenkins_home/state
+        s=$(cat /var/jenkins_home/state)
+        while [ "$s" != "ready" ]; do
+          if [ "$s" = "cert" ]; then
+            # Second state: Set git cert path and disable java secure option for initialization
+            git config --global http.sslCAInfo /var/jenkins_home/certs/gitea.crt
+            export JAVA_OPTS="-Dhudson.security.csrf.GlobalCrumbIssuerConfiguration.DISABLE_CSRF_PROTECTION=true"
+            /usr/local/bin/jenkins.sh 
+            exit 0
+          else
+            # Very first state: Just wait for 'java_keystore' container to set cert for git and java
+            sleep 10
+          fi
+          sleep 5
+          s=$(cat /var/jenkins_home/state)
+        done
+        # Final state: Just run jenkins without insecure options
+        /usr/local/bin/jenkins.sh 
+
+  - ansible.builtin.import_tasks: wait-apt.yaml
+
+  - name: Make dockerfile for jenkins (Add docker client only)
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/jenkins/Dockerfile"
+      create: yes
+      block: |
+        FROM jenkins/jenkins:{{ jenkins['ver'] }}
+        USER root
+        RUN apt-get update && apt-get install -y lsb-release
+        RUN curl -fsSLo /usr/share/keyrings/docker-archive-keyring.asc https://download.docker.com/linux/debian/gpg
+        RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.asc] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+        RUN apt-get update && apt-get install -y docker-ce-cli={{ jenkins['docker_cli_ver'] }}
+        USER jenkins
+
+  - name: Get the harbor cert to use in the jenkins dind
+    ansible.builtin.shell: >
+      openssl s_client -connect {{ harbor['external'] }}:443 < /dev/null 2> /dev/null | \
+      sed -En '/^-----BEGIN CERTIFICATE-----$/,/^-----END CERTIFICATE-----$/p' > {{ dir }}/jenkins/docker-registry-cert/harbor.crt
+
+  - name: Make jenkins docker compose file
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/docker-compose.yaml"
+      create: yes
+      block: |
+        version: "3"
+        networks:
+          jenkins_net:
+            driver: bridge
+        volumes:
+          jenkins_data:
+            driver: local
+            driver_opts:
+              type: none
+              o: bind
+              device: {{ dir }}/jenkins/data
+          jenkins_certs:
+            driver: local
+            driver_opts:
+              type: none
+              o: bind
+              device: {{ dir }}/jenkins/docker-certs
+        services:
+          proxy:
+            container_name: jenkins_proxy
+            image: nginx:{{ jenkins['nginx_ver'] }}
+            restart: always
+            networks:
+            - jenkins_net
+            volumes:
+            - {{ dir }}/nginx/nginx.conf:/etc/nginx/nginx.conf
+            - {{ dir }}/nginx/certs:/etc/nginx/certs
+            - {{ dir }}/nginx/tmp:/tmp
+            ports:
+            - {{ jenkins['port'] }}:{{ jenkins['port'] }}
+            depends_on:
+            - jenkins
+          jenkins:
+            container_name: jenkins
+            image: jenkins/jenkins:{{ jenkins['ver'] }}-d
+            build:
+              context: {{ dir }}/jenkins
+            restart: always
+            environment:
+            - DOCKER_HOST=tcp://docker:2376
+            - DOCKER_CERT_PATH=/certs/client
+            - DOCKER_TLS_VERIFY=1
+            - PLUGIN_DIR=/var/jenkins_home/plugins
+            - CASC_JENKINS_CONFIG=/var/jenkins_home/casc_configs
+            networks:
+            - jenkins_net
+            volumes:
+            - jenkins_data:/var/jenkins_home
+            - jenkins_certs:/certs:ro
+            - {{ dir }}/jenkins/keystore:/opt/java/openjdk/lib/security
+            - {{ dir }}/jenkins/wait-and-run.sh:/usr/local/bin/wait-and-run.sh
+            entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/wait-and-run.sh"]
+            depends_on:
+            - docker
+            - java_keystore
+          java_keystore:
+            container_name: java_keystore
+            image: jenkins/jenkins:{{ jenkins['ver'] }}
+            user: root
+            restart: on-failure
+            volumes:
+            - jenkins_data:/var/jenkins_home
+            - {{ dir }}/jenkins/keystore:/keystore
+            entrypoint: ""
+            command:
+            - sh
+            - -c
+            - |
+              touch /var/jenkins_home/state
+              if [ -z "$(cat /var/jenkins_home/state)" ]; then
+                cd /keystore
+                cp -rn /opt/java/openjdk/lib/security/* ./
+                if [ ! -f gitea.crt ]; then
+                  openssl s_client -connect {{ gitea['external'] }}:443 < /dev/null 2> /dev/null | \
+                  sed -En '/^-----BEGIN CERTIFICATE-----$/,/^-----END CERTIFICATE-----$/p' > gitea.crt
+                fi
+                keytool -importcert -alias gitea -file gitea.crt -noprompt -keystore cacerts -storepass changeit
+                if [ $? != 0 ]; then
+                  rm gitea.crt
+                  sleep 15
+                  exit 1
+                else
+                  mkdir -p /var/jenkins_home/certs
+                  cp -f gitea.crt /var/jenkins_home/certs/
+                  chown -R jenkins:jenkins /var/jenkins_home/certs
+                  echo "cert" > /var/jenkins_home/state
+                  chown jenkins:jenkins /var/jenkins_home/state
+                fi
+              fi
+          docker:
+            container_name: jenkins_docker
+            image: docker:{{ jenkins['docker_ver'] }}
+            privileged: true
+            restart: always
+            environment:
+            - DOCKER_TLS_CERTDIR=/certs
+            networks:
+            - jenkins_net
+            volumes:
+            - jenkins_data:/var/jenkins_home
+            - jenkins_certs:/certs
+            - {{ dir }}/jenkins/docker-data:/var/lib/docker
+            - type: bind
+              source: {{ dir }}/jenkins/docker-registry-cert
+              target: /etc/docker/certs.d/{{ harbor['external'] }}
+            command: --storage-driver=overlay2
+
+  - ansible.builtin.package_facts:
+      manager: apt
+
+  - ansible.builtin.import_tasks: wait-apt.yaml
+
+  - name: Install jq to parse json
+    become: yes
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+      - jq
+    when: "'jq' not in ansible_facts.packages"
+
+  - name: Check jenkins
+    ansible.builtin.shell: docker compose -f {{ dir }}/docker-compose.yaml ps --format json | jq length
+    register: jenkins_num
+
+  - name: Shut down jenkins if it's not totally running
+    ansible.builtin.shell: docker compose -f {{ dir }}/docker-compose.yaml down
+    when: jenkins_num['stdout'] != "4"
+
+  - name: Run jenkins
+    ansible.builtin.shell: docker compose -f {{ dir }}/docker-compose.yaml up -d
+    when: jenkins_num['stdout'] != "4"
+
+  - name: Wait for initial password to be generated
+    ansible.builtin.shell: |
+      t=0
+      wait=6
+      try=15
+      end=$((wait*try))
+      while [ ! -f "{{ dir }}/jenkins/data/secrets/initialAdminPassword" ]; do
+        if [ $t -lt $end ]; then
+          sleep $wait
+          t=$((t+wait))
+        else
+          echo 'Timeout'
+          exit 1
+        fi
+      done
+
+  - name: Copy initial password
+    ansible.builtin.fetch:
+      src: "{{ dir }}/jenkins/data/secrets/initialAdminPassword"
+      dest: ./.keep/jenkins-admin-pw
+      flat: yes
+    when: jenkins_num['stdout'] != "4"
+
+- hosts: dns0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Append jenkins addr to the coredns hosts file
+    ansible.builtin.shell: |
+      grep -E "([0-9]{1,3}.){3}[0-9]{1,3}[ $(echo -e '\t')]+{{ jenkins['domain'] }}" {{ coredns['hosts'] }}
+      if [ $? != 0 ]; then
+        echo {{ hostvars['ci0']['ansible_host'] }} {{ jenkins['domain'] }} >> {{ coredns['hosts'] }}
+      fi
+      grep -E "([0-9]{1,3}.){3}[0-9]{1,3}[ $(echo -e '\t')]+{{ jenkins['external'] }}" {{ coredns['hosts'] }}
+      if [ $? != 0 ]; then
+        echo {{ hostvars['proxy0']['ansible_host'] }} {{ jenkins['external'] }} >> {{ coredns['hosts'] }}
+      fi
+
+- name: Connect jenkins ci server to envoy proxy
+  ansible.builtin.import_playbook: connect-proxy.yaml
+  vars:
+    domain: "{{ jenkins['domain'] }}"
+    portnum: "{{ jenkins['port'] }}"
+    external: "{{ jenkins['external'] }}"
+

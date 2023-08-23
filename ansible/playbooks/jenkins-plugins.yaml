@@ -1,0 +1,59 @@
+---
+- hosts: ci0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ jenkins['dir'] }}"
+  tasks:
+  - name: Download jenkins plugin - Pipeline
+    ansible.builtin.shell: >
+      docker exec jenkins jenkins-plugin-cli --plugins workflow-aggregator:590.v6a_d052e5a_a_b_5
+
+  - name: Download jenkins plugin - Git
+    ansible.builtin.shell: >
+      docker exec jenkins jenkins-plugin-cli --plugins git:4.12.1
+
+  - name: Download jenkins plugin - Gitea
+    ansible.builtin.shell: >
+      docker exec jenkins jenkins-plugin-cli --plugins gitea:1.4.4
+
+  - name: Download jenkins plugin - Configuration as Code
+    ansible.builtin.shell: >
+      docker exec jenkins jenkins-plugin-cli --plugins configuration-as-code:1559.v38a_b_2e3b_6b_b_7
+
+  - name: Make a directory to store configurations
+    ansible.builtin.file:
+      path: "{{ dir }}/jenkins/data/casc_configs"
+      state: directory
+
+  - name: Download jenkins plugin - Job DSL
+    ansible.builtin.shell: >
+      docker exec jenkins jenkins-plugin-cli --plugins job-dsl:1.81
+
+  - name: Download jenkins plugin - Docker Pipeline
+    ansible.builtin.shell: >
+      docker exec jenkins jenkins-plugin-cli --plugins docker-workflow:528.v7c193a_0b_e67c
+
+  - name: Check jenkins cli tool
+    ansible.builtin.stat:
+      path: "{{ dir }}/jenkins/data/jenkins-cli.jar"
+    register: stat_cli
+
+  - name: Copy jenkins cli tool
+    ansible.builtin.shell: |
+      find {{ dir }}/jenkins/data/war/WEB-INF/lib/ -name cli-*.jar -print0 | \
+      xargs -0 -n 1 -I {} cp {} {{ dir }}/jenkins/data/jenkins-cli.jar
+    when: not stat_cli['stat']['exists']
+
+  - name: Restart jenkins to install plugins
+    ansible.builtin.shell: |
+      pw=$(cat {{ dir }}/jenkins/data/secrets/initialAdminPassword)
+      docker exec jenkins java -jar /var/jenkins_home/jenkins-cli.jar -s http://localhost:8080 -auth admin:$pw restart
+
+  - vars:
+      title: "Wait for jenkins to become ready"
+      path: "/"
+      code: 200
+    ansible.builtin.import_tasks: wait-jenkins.yaml
+

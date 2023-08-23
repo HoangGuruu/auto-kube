@@ -1,0 +1,44 @@
+---
+# Pull containerd sandbox image and kube images and push them to harbor
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ kubeadm['dir'] }}"
+  - harbor_pw: "{{ lookup('file', '.keep/harbor-robot-kube-secret') }}"
+  tasks:
+  - name: Make sure the dir exists
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Collect containerd and kube image names
+    ansible.builtin.shell: |
+      containerd config default | grep sandbox_image | sed 's/.*= //; s/"//g' > {{ dir }}/src-images
+      echo {{ harbor['prj'] }}/$(cat {{ dir }}/src-images) > {{ dir }}/dest-images
+      kubeadm config images list --kubernetes-version "{{ kubeadm['cmd_ver'] }}" >> {{ dir }}/src-images
+      srcrepo=$(kubeadm config print init-defaults | grep imageRepository | sed "s/^imageRepository: //")
+      kubeadm config images list --kubernetes-version "{{ kubeadm['cmd_ver'] }}" --image-repository "{{ harbor['prj'] }}/$srcrepo" >> {{ dir }}/dest-images
+
+  - name: Login to harbor
+    ansible.builtin.import_tasks: login-harbor.yaml
+
+  - name: Pull containerd and kube images
+    ansible.builtin.shell: |
+      linenum=$(wc -l "{{ dir }}/src-images" | cut -d ' ' -f 1)
+      i=1
+      while [ $i -le $linenum ]; do
+        src=$(sed "$i!d;q" "{{ dir }}/src-images")
+        dest=$(sed "$i!d;q" "{{ dir }}/dest-images")
+        repo=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 1)
+        tag=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 2)
+        existtags=$(curl -ksu 'robot$kube':{{ harbor_pw }} https://{{ harbor['external'] }}/v2/$repo/tags/list)
+        if [ -z "$(echo $existtags | grep $tag)" ]; then
+          docker image pull $src
+          docker image tag $src $dest
+          docker image push $dest
+        fi
+        i=$((i+1))
+      done
+

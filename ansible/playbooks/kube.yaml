@@ -1,0 +1,55 @@
+---
+# Install kube
+- hosts: cluster
+  gather_facts: no
+  vars_files: 
+  - vars.yaml
+  tasks:
+  - ansible.builtin.package_facts:
+      manager: apt
+
+  - ansible.builtin.import_tasks: wait-apt.yaml
+
+  - name: Install kube prerequisites
+    become: yes
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+    when: "'kubelet' not in ansible_facts.packages"
+
+  - name: Add kube apt repository
+    become: yes
+    ansible.builtin.shell: |
+      curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+      echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list > /dev/null
+    when: "'kubelet' not in ansible_facts.packages"
+
+  - name: Update apt cache using command
+    become: yes
+    ansible.builtin.shell: apt update
+    when: "'kubelet' not in ansible_facts.packages"
+
+  - ansible.builtin.import_tasks: wait-apt.yaml
+
+  - name: Install kube
+    become: yes
+    ansible.builtin.apt:
+      pkg:
+      - kubelet={{ kubelet['apt_ver'] }}
+      - kubeadm={{ kubeadm['apt_ver'] }}
+      - kubectl={{ kubectl['apt_ver'] }}
+    when: "'kubelet' not in ansible_facts.packages"
+
+  - name: Hold kube version
+    become: yes
+    ansible.builtin.shell: apt-mark hold kubelet kubeadm kubectl
+    when: "'kubelet' not in ansible_facts.packages"
+
+  - name: Apply kube bash autocompletion
+    ansible.builtin.blockinfile:
+      path: ~/.bashrc
+      block: source <(kubectl completion bash)
+

@@ -1,0 +1,77 @@
+---
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ argocd['dir'] }}/conf"
+  tasks:
+  - name: Make sure the dir exist
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Add dns address to the k8s coredns
+    ansible.builtin.shell:
+      chdir: "{{ dir }}"
+      cmd: |
+        kubectl get configmaps -n kube-system coredns -o yaml > configmaps-coredns.yaml
+        start_line=$(cat configmaps-coredns.yaml | grep -En '^data:' | cut -d ':' -f 1)
+        lines=$(tail -n +$((start_line+1)) configmaps-coredns.yaml | grep -En '^[a-z]+' | head -1 | cut -d ':' -f 1)
+        tail -n +$start_line configmaps-coredns.yaml | head -n $lines > patch-configmaps-coredns.yaml
+        if [ -z "$(cat patch-configmaps-coredns.yaml | grep gitea.git)" ]; then
+          echo "    {{ gitea['external'] }}:53 {" >> patch-configmaps-coredns.yaml
+          echo "      errors" >> patch-configmaps-coredns.yaml
+          echo "      cache 30" >> patch-configmaps-coredns.yaml
+          echo "      forward . {{ hostvars['dns0']['ansible_host'] }}" >> patch-configmaps-coredns.yaml
+          echo "    }" >> patch-configmaps-coredns.yaml
+          kubectl patch configmaps -n kube-system coredns --patch-file patch-configmaps-coredns.yaml
+        fi
+
+  - name: Check gitea cert
+    ansible.builtin.stat:
+      path: "{{ dir }}/gitea.crt"
+    register: stat_gitea
+
+  - name: Get the gitea cert
+    ansible.builtin.shell: >
+      openssl s_client -connect {{ gitea['external'] }}:443 < /dev/null 2> /dev/null | \
+      sed -En '/^-----BEGIN CERTIFICATE-----$/,/^-----END CERTIFICATE-----$/p' > {{ dir }}/gitea.crt
+    when: not stat_gitea['stat']['exists']
+
+  - name: Wait for argo cd to become ready
+    ansible.builtin.shell: |
+      t=0
+      wait=15
+      try=8
+      end=$((wait*try))
+      while [ $t -lt $end ]; do
+        ready=$(kubectl get pods -n argocd --no-headers=true -o custom-columns=:status.containerStatuses[*].ready | sed "s/<none>//g")
+        not_ready=$(echo $ready | grep false)
+        if [ -n "$ready" ] && [ -z "$not_ready" ]; then
+          exit 0
+        else
+          sleep $wait
+        fi
+        t=$((t+wait))
+      done
+      exit 1
+
+  - name: Regist gitea cert to the argo cd
+    ansible.builtin.shell:
+      chdir: "{{ dir }}"
+      cmd: |
+        ip=$(kubectl get svc -n argocd argocd-server --no-headers=true -o custom-columns=:spec.clusterIP)
+        pw=$(kubectl get secret -n argocd argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+        token=$(curl -ks https://$ip/api/v1/session -d '{"username":"admin","password":"'"$pw"'"}' | jq -r .token)
+        data=$(cat gitea.crt | base64 | tr -d '\n')
+        curl -ks https://$ip/api/v1/certificates \
+          -H "Authorization: Bearer $token" \
+          -d '{
+            "items": [{
+              "serverName": "{{ gitea['external'] }}",
+              "certType": "https",
+              "certData": "'"$data"'"
+            }]
+          }'
+

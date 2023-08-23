@@ -1,0 +1,59 @@
+---
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ metallb['dir'] }}"
+  - harbor_pw: "{{ lookup('file', '.keep/harbor-robot-kube-secret') }}"
+  tasks:
+  - name: Make sure the dir exists
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Check metallb manifest
+    ansible.builtin.stat:
+      path: "{{ dir }}/metallb-native.yaml.org"
+    register: stat_metallb
+
+  - name: Download metallb manifest
+    ansible.builtin.shell: >
+      curl https://raw.githubusercontent.com/metallb/metallb/{{ metallb['ver'] }}/config/manifests/metallb-native.yaml \
+        -o {{ dir }}/metallb-native.yaml.org
+    when: not stat_metallb['stat']['exists']
+
+  - name: Copy manifest and collect image names
+    ansible.builtin.shell: |
+      cp -f {{ dir }}/metallb-native.yaml.org {{ dir }}/metallb-native.yaml
+      cat {{ dir }}/metallb-native.yaml | grep image: | sed "s/image: //; s/ //g" | sort | uniq > {{ dir }}/src-images
+      cat {{ dir }}/src-images | sed "s#^#{{ harbor['prj'] }}/#" > {{ dir }}/dest-images
+
+  - name: Login to harbor
+    ansible.builtin.import_tasks: login-harbor.yaml
+
+  - name: Pull metallb images
+    ansible.builtin.shell: |
+      linenum=$(wc -l {{ dir }}/src-images | cut -d ' ' -f 1)
+      i=1
+      while [ $i -le $linenum ]; do
+        src=$(sed "$i!d;q" {{ dir }}/src-images)
+        dest=$(sed "$i!d;q" {{ dir }}/dest-images)
+        repo=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 1)
+        tag=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 2)
+        existtags=$(curl -ksu 'robot$kube':{{ harbor_pw }} https://{{ harbor['external'] }}/v2/$repo/tags/list)
+        if [ -z "$(echo $existtags | grep $tag)" ]; then
+          docker image pull $src
+          docker image tag $src $dest
+          docker image push $dest
+        fi
+        i=$((i+1))
+      done
+
+  - name: Change metallb repository in the manifest
+    ansible.builtin.shell: |
+      sed -i "s#image: #image: {{ harbor['prj'] }}/#" {{ dir }}/metallb-native.yaml
+
+  - name: Install metallb
+    ansible.builtin.shell: kubectl apply -f {{ dir }}/metallb-native.yaml
+

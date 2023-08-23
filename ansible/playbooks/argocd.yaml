@@ -1,0 +1,72 @@
+---
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ argocd['dir'] }}"
+  - harbor_pw: "{{ lookup('file', '.keep/harbor-robot-kube-secret') }}"
+  tasks:
+  - name: Make sure the dir exists
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Check argocd manifest
+    ansible.builtin.stat:
+      path: "{{ dir }}/install.yaml"
+    register: stat_argocd
+
+  - name: Download argocd manifest
+    ansible.builtin.shell: >
+      curl https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd['ver'] }}/manifests/install.yaml \
+        -o {{ dir }}/install.yaml.org
+    when: not stat_argocd['stat']['exists']
+
+  - name: Copy manifest and collect image names
+    ansible.builtin.shell: |
+      cp -f {{ dir }}/install.yaml.org {{ dir }}/install.yaml
+      cat {{ dir }}/install.yaml | grep -E "^[ $(echo -e '\t')]*image:" | sed "s/[ $(echo -e '\t')]*image: //; s/\"//g" | sort | uniq > {{ dir }}/src-images
+      cat {{ dir }}/src-images | sed "s#^#{{ harbor['prj'] }}/#" > {{ dir }}/dest-images
+
+  - name: Login to harbor
+    ansible.builtin.import_tasks: login-harbor.yaml
+
+  - name: Pull argocd images
+    ansible.builtin.shell: |
+      linenum=$(wc -l {{ dir }}/src-images | cut -d ' ' -f 1)
+      i=1
+      while [ $i -le $linenum ]; do
+        src=$(sed "$i!d;q" {{ dir }}/src-images)
+        dest=$(sed "$i!d;q" {{ dir }}/dest-images)
+        repo=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 1)
+        tag=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 2)
+        existtags=$(curl -ksu 'robot$kube':{{ harbor_pw }} https://{{ harbor['external'] }}/v2/$repo/tags/list)
+        if [ -z "$(echo $existtags | grep $tag)" ]; then
+          docker image pull $src
+          docker image tag $src $dest
+          docker image push $dest
+        fi
+        i=$((i+1))
+      done
+
+  - name: Change argocd repository and service type in the manifest
+    ansible.builtin.shell: |
+      sed -i "s#image: #image: {{ harbor['prj'] }}/#" {{ dir }}/install.yaml
+      start_lines=$(cat {{ dir }}/install.yaml | grep -En 'kind: Service[ $(echo -e '\t')]*$' | cut -d ':' -f 1)
+      for start_line in $start_lines; do
+        lines=$(tail -n +$start_line {{ dir }}/install.yaml | grep -n -- '---' | head -1 | cut -d ':' -f 1)
+        target=$(tail -n +$start_line {{ dir }}/install.yaml | head -n $lines | grep -En "^[ $(echo -e '\t')]*name: argocd-server[ $(echo -e '\t')]*$")
+        if [ ! -z "$target" ]; then
+          spec_offset=$(tail -n +$start_line {{ dir }}/install.yaml | head -n $lines | grep -En "^spec:" | cut -d ':' -f 1)
+          insert_line=$((start_line+spec_offset))
+          sed -i "$insert_line i \ \ type: LoadBalancer\n  loadBalancerIP: {{ argocd['ip'] }}" {{ dir }}/install.yaml
+          exit 0
+        fi
+      done
+
+  - name: Install argocd
+    ansible.builtin.shell: |
+      kubectl create namespace argocd
+      kubectl apply -n argocd -f {{ dir }}/install.yaml
+

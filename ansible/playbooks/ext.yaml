@@ -1,0 +1,86 @@
+---
+# Set up DNS
+- hosts: dns
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Install containerd
+    ansible.builtin.import_tasks: containerd.yaml
+  - name: Install docker
+    ansible.builtin.import_tasks: docker.yaml
+- name: Install coredns
+  ansible.builtin.import_playbook: coredns.yaml
+
+# Set up proxy
+- hosts: proxy
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Add dns address to the hosts
+    ansible.builtin.import_tasks: add-dns.yaml
+  - name: Install containerd
+    ansible.builtin.import_tasks: containerd.yaml
+  - name: Install docker
+    ansible.builtin.import_tasks: docker.yaml
+- name: Install envoy
+  ansible.builtin.import_playbook: envoy.yaml
+
+# Set up registry(harbor)
+- hosts: registry
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Add dns address to the hosts
+    ansible.builtin.import_tasks: add-dns.yaml
+  - name: Install containerd
+    ansible.builtin.import_tasks: containerd.yaml
+  - name: Install docker
+    ansible.builtin.import_tasks: docker.yaml
+- name: Install harbor
+  ansible.builtin.import_playbook: harbor.yaml
+- name: Configure harbor
+  ansible.builtin.import_playbook: harbor-conf.yaml
+
+# Set up SCM(git)
+- hosts: git
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Add dns address to the hosts
+    ansible.builtin.import_tasks: add-dns.yaml
+  - name: Install containerd
+    ansible.builtin.import_tasks: containerd.yaml
+  - name: Install docker
+    ansible.builtin.import_tasks: docker.yaml
+- name: Install gitea
+  ansible.builtin.import_playbook: gitea.yaml
+- name: Configure gitea
+  ansible.builtin.import_playbook: gitea-conf.yaml
+
+# Set up CI(jenkins)
+- hosts: ci
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Add dns address to the hosts
+    ansible.builtin.import_tasks: add-dns.yaml
+  - name: Install containerd
+    ansible.builtin.import_tasks: containerd.yaml
+  - name: Install docker
+    ansible.builtin.import_tasks: docker.yaml
+- name: Install jenkins
+  ansible.builtin.import_playbook: jenkins.yaml
+- name: Install jenkins plugins
+  ansible.builtin.import_playbook: jenkins-plugins.yaml
+- name: Configure jenkins
+  ansible.builtin.import_playbook: jenkins-conf.yaml
+- name: Make sample project
+  ansible.builtin.import_playbook: jenkins-sample.yaml
+- name: Restore jenkins secutiry options
+  ansible.builtin.import_playbook: jenkins-restore-sec.yaml
+

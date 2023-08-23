@@ -1,0 +1,32 @@
+---
+# Install docker
+- ansible.builtin.package_facts:
+    manager: apt
+
+- ansible.builtin.import_tasks: wait-apt.yaml
+
+- name: Install docker engine
+  become: yes
+  ansible.builtin.apt:
+    pkg:
+    - docker-ce={{ docker['engine_ver'] }}
+    - docker-ce-cli={{ docker['engine_ver'] }}
+    - docker-compose-plugin={{ docker['compose_ver'] }}
+  when: "'docker-ce' not in ansible_facts.packages"
+
+- name: Add docker group
+  become: yes
+  ansible.builtin.group:
+    name: docker
+    state: present
+
+- name: Add user into the docker group
+  become: yes
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    append: yes
+    groups: docker
+
+- name: Reset ssh connection to apply group
+  ansible.builtin.meta: reset_connection
+

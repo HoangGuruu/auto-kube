@@ -1,0 +1,78 @@
+node {
+
+  '''
+  I can't use gitea-credentials in this script, and Gitea inserts access token of gitea-credentials into the URL...
+  (It will be printed in the console output, but I don't know how I can hide it)
+  So, I'll use the access token in the URL instead of gitea-credentials.
+  To do that, I keep the access token here.
+  '''
+  def urlWithToken = scm.getUserRemoteConfigs()[0].getUrl()
+  def scmScheme = urlWithToken.split('://')[0]
+  def giteaToken = urlWithToken.split('://')[1].split('@')[0]
+  def scmDomain = urlWithToken.split('@')[1].split('/')[0]
+
+  checkout scm
+  def commitHash = sh(returnStdout: true, script: "git log -n 1 --pretty=format:'%H'")
+  def tagRev = "${env.BUILD_ID}" + '-' + commitHash[0..9]
+
+  stage('Login to registry') {
+    withCredentials([usernamePassword(credentialsId: 'harbor-credentials', 
+      usernameVariable: 'regUser', passwordVariable: 'regPw')]) {
+      sh 'echo "$regPw" | docker login -u "$regUser" --password-stdin HARBOR_URL'
+    }
+  }
+
+  stage('Build and Push base images') {
+    sh '''
+      DOCKER_BUILDKIT=1 docker build -t HARBOR_URL/library/myprj/myapp-base:dev0.1 --target base_dev .
+      DOCKER_BUILDKIT=1 docker build -t HARBOR_URL/library/myprj/myapp-base:test0.1 --target base_test .
+      docker push HARBOR_URL/library/myprj/myapp-base:dev0.1
+      docker push HARBOR_URL/library/myprj/myapp-base:test0.1
+    '''
+  }
+
+  try {
+    stage('Build') {
+      sh """
+        DOCKER_BUILDKIT=1 docker build -t HARBOR_URL/library/myprj/myapp:dev${tagRev} --target dev .
+        DOCKER_BUILDKIT=1 docker build -t myprj/myapp:test --target test_unit .
+      """
+    }
+
+    stage('Test') {
+      sh 'docker run --rm myprj/myapp:test'
+    }
+
+    stage('Push') {
+      sh "docker push HARBOR_URL/library/myprj/myapp:dev${tagRev}"
+    }
+
+    stage('Update K8s manifest') {
+      git branch: 'main',
+          url: "$scmScheme://$scmDomain/jenkins-automation/sample-config.git",
+          credentialsId: 'gitea-credentials',
+          changelog: false
+      sh """
+        sed -Ei 's/myapp:dev.*/myapp:dev$tagRev/' dev/myapp-deployment.yaml
+        git config user.name jenkins
+        git config user.email jenkins@email.com
+        git commit -am 'bot: Update tag myapp:dev$tagRev'
+      """
+      sh """
+        set +x # Hide commands
+        echo '[Echo] Push to $scmScheme://$scmDomain/jenkins-automation/sample-config.git'
+        git remote set-url origin $scmScheme://$giteaToken@$scmDomain/jenkins-automation/sample-config.git
+        git push -u origin main
+      """
+    }
+  } finally {
+    stage('Clear') {
+      sh """
+        docker logout HARBOR_URL
+        docker image rm -f HARBOR_URL/library/myprj/myapp:dev${tagRev}
+        docker image rm -f myprj/myapp:test
+      """
+    }
+  }
+}
+

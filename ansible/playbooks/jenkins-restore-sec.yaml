@@ -1,0 +1,37 @@
+---
+- hosts: ci0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ jenkins['dir'] }}"
+  tasks:
+  - name: Set security setting to default
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/jenkins/data/casc_configs/init/security.yaml"
+      create: yes
+      block: |
+        security:
+          # Restore
+          globalJobDslSecurityConfiguration:
+            useScriptSecurity: true
+
+  - name: Mark jenkins is fully configured, so insecure options will be removed on next running
+    ansible.builtin.shell: echo "ready" > {{ dir }}/jenkins/data/state
+
+  - name: Restart jenkins
+    ansible.builtin.shell: |
+      pw=$(cat {{ dir }}/jenkins/data/secrets/initialAdminPassword)
+      docker exec jenkins java -jar /var/jenkins_home/jenkins-cli.jar -s http://localhost:8080 -auth admin:$pw restart
+
+  - vars:
+      title: "Wait for jenkins to become ready"
+      path: "/"
+      code: 200
+    ansible.builtin.import_tasks: wait-jenkins.yaml
+
+  - name: Remove initial configurations by renaming
+    ansible.builtin.shell: |
+      rm -rf {{ dir }}/jenkins/data/casc_configs/.init
+      mv {{ dir }}/jenkins/data/casc_configs/init {{ dir }}/jenkins/data/casc_configs/.init
+

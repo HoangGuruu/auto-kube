@@ -1,0 +1,86 @@
+---
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ dashboard['dir'] }}"
+  - harbor_pw: "{{ lookup('file', '.keep/harbor-robot-kube-secret') }}"
+  tasks:
+  - name: Make sure the dir exists
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Check dashboard chart
+    ansible.builtin.stat:
+      path: "{{ dir }}/kubernetes-dashboard-{{ dashboard['ver'] }}.tgz"
+    register: stat_chart
+
+  - name: Pull dashboard chart
+    ansible.builtin.shell: |
+      helm pull kubernetes-dashboard --repo https://kubernetes.github.io/dashboard/ --version {{ dashboard['ver'] }}
+      mv ~/kubernetes-dashboard-{{ dashboard['ver'] }}.tgz {{ dir }}/
+    when: not stat_chart['stat']['exists']
+
+  - name: Check dashboard
+    ansible.builtin.shell: helm list -n kubernetes-dashboard | grep kubernetes-dashboard
+    register: grep_dashboard
+    failed_when: grep_dashboard['rc'] == 2
+
+  - name: Remove previous dashboard untar dir
+    ansible.builtin.file:
+      path: "{{ dir }}/kubernetes-dashboard"
+      state: absent
+    when: grep_dashboard['rc'] == 1
+
+  - name: Untar dashboard chart
+    ansible.builtin.shell: tar -xzf {{ dir }}/kubernetes-dashboard-{{ dashboard['ver'] }}.tgz -C {{ dir }}
+    when: grep_dashboard['rc'] == 1
+
+  - name: Collect dashboard image names
+    ansible.builtin.shell: |
+      helm template kubernetes-dashboard {{ dir }}/kubernetes-dashboard > {{ dir }}/rendered.yaml
+      cat {{ dir }}/rendered.yaml | grep "^[ $(echo -e '\t')]*image:" | sed "s/[ $(echo -e '\t')]*image: //; s/\"//g" | sort | uniq > {{ dir }}/src-images
+      cat {{ dir }}/src-images | sed "s#^#{{ harbor['prj'] }}/#" > {{ dir }}/dest-images
+    when: grep_dashboard['rc'] == 1
+
+  - name: Login to harbor
+    ansible.builtin.import_tasks: login-harbor.yaml
+    when: grep_dashboard['rc'] == 1
+
+  - name: Pull dashboard images
+    ansible.builtin.shell: |
+      linenum=$(wc -l {{ dir }}/src-images | cut -d ' ' -f 1)
+      i=1
+      while [ $i -le $linenum ]; do
+        src=$(sed "$i!d;q" {{ dir }}/src-images)
+        dest=$(sed "$i!d;q" {{ dir }}/dest-images)
+        repo=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 1)
+        tag=$(echo $dest | sed "s#{{ harbor['external'] }}/##" | cut -d ':' -f 2)
+        existtags=$(curl -ksu 'robot$kube':{{ harbor_pw }} https://{{ harbor['external'] }}/v2/$repo/tags/list)
+        if [ -z "$(echo $existtags | grep $tag)" ]; then
+          docker image pull $src
+          docker image tag $src $dest
+          docker image push $dest
+        fi
+        i=$((i+1))
+      done
+    when: grep_dashboard['rc'] == 1
+
+  - name: Create namespace
+    ansible.builtin.shell: kubectl create namespace kubernetes-dashboard
+    register: create_ns
+    failed_when: create_ns['rc'] != 0 and create_ns['rc'] != 1
+    when: grep_dashboard['rc'] == 1
+
+  - name: Install dashboard
+    ansible.builtin.shell: |
+      sed -i "s#repository: #repository: {{ harbor['prj'] }}/#" {{ dir }}/kubernetes-dashboard/values.yaml
+      helm install kubernetes-dashboard {{ dir }}/kubernetes-dashboard \
+        -n kubernetes-dashboard \
+        --set extraArgs={--token-ttl=0} \
+        --set service.type=LoadBalancer \
+        --set service.loadBalancerIP={{ dashboard['ip'] }}
+    when: grep_dashboard['rc'] == 1
+

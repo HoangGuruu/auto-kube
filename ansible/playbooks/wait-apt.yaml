@@ -1,0 +1,17 @@
+---
+- name: Wait for unattended upgrades
+  become: yes
+  ansible.builtin.shell: |
+    t=0
+    wait=5
+    try=36
+    end=$((wait*try))
+    while lsof /var/lib/dpkg/lock-frontend 1> /dev/null; do
+      if [ $t -ge $end ]; then
+        echo 'Timeout'
+        exit 1
+      fi
+      sleep $wait
+      t=$((t+wait))
+    done
+

@@ -1,0 +1,21 @@
+---
+# Add coredns address to the systemd-resolved
+- name: Make systemd-resolved configuration dir 
+  become: yes 
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+
+- name: Append systemd-resolved configuration for coredns
+  become: yes 
+  ansible.builtin.blockinfile:
+    path: /etc/systemd/resolved.conf.d/coredns.conf
+    create: yes
+    block: |
+      [Resolve]
+      DNS={{ hostvars['dns0']['ansible_host'] }}
+
+- name: Restart daemon
+  become: yes 
+  ansible.builtin.shell: systemctl restart systemd-resolved
+

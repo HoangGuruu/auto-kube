@@ -1,0 +1,83 @@
+---
+- hosts: dns0
+  gather_facts: yes
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ coredns['dir'] }}"
+  tasks:
+  - name: Make sure the dirs exist
+    ansible.builtin.file:
+      path: "{{ item }}"
+      state: directory
+    loop:
+    - "{{ dir }}"
+    - "{{ coredns['data'] }}"
+
+  - name: Pull coredns image
+    ansible.builtin.shell: docker image pull coredns/coredns:{{ coredns['ver'] }}
+
+  - name: Disable systemd-resolved
+    become: yes
+    ansible.builtin.shell: systemctl disable systemd-resolved --now
+
+  - name: Back up the original resolv.conf and replace it
+    become: yes
+    ansible.builtin.shell: |
+      if [ ! -L "/etc/resolv.conf.backup" ]; then
+        mv /etc/resolv.conf /etc/resolv.conf.backup
+        echo "nameserver {{ hostvars['dns0']['ansible_host'] }}" > {{ dir }}/resolv.conf
+        ln -rsf {{ dir }}/resolv.conf /etc/resolv.conf
+      fi
+
+  - name: Make coredns Corefile
+    ansible.builtin.blockinfile:
+      path: "{{ coredns['data'] }}/Corefile"
+      create: yes
+      block: |
+        . {
+          log 
+          errors
+          reload
+          hosts /data/hosts {
+            fallthrough
+          }
+          forward . 1.1.1.1 8.8.8.8
+        }
+
+  - name: Make coredns hosts file
+    ansible.builtin.file:
+      path: "{{ coredns['hosts'] }}"
+      state: touch
+
+  - name: Make coredns docker compose file
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/docker-compose.yaml"
+      create: yes
+      block: |
+        version: "3"
+        services:
+          dns:
+            container_name: coredns
+            image: coredns/coredns:{{ coredns['ver'] }}
+            restart: always
+            ports:
+            # Specify interface
+            # If this is omitted, the src IP in the response couldn't be DNS IP when it received the request over other interfaces, (e.g. lo)
+            # This can cause rejection at client side
+            # See iptables -t nat -L -n
+            - {{ hostvars['dns0']['ansible_host'] }}:53:53/tcp
+            - {{ hostvars['dns0']['ansible_host'] }}:53:53/udp
+            volumes:
+            - {{ coredns['data'] }}/:/data
+            command: -conf /data/Corefile
+
+  - name: Check coredns
+    ansible.builtin.shell: docker compose -f {{ dir }}/docker-compose.yaml ps | grep coredns
+    register: grep_coredns
+    failed_when: grep_coredns['rc'] == 2
+
+  - name: Run coredns
+    ansible.builtin.shell: docker compose -f {{ dir }}/docker-compose.yaml up -d
+    when: grep_coredns['rc'] == 1
+

@@ -1,0 +1,202 @@
+---
+# Install and run harbor
+- hosts: registry0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ harbor['dir'] }}/certs"
+  - cn: "{{ harbor['domain'] }}"
+  - alt_names: "{{ harbor['alt_names'] }}"
+  tasks:
+  - name: Generate cert for harbor
+    ansible.builtin.import_tasks: cert.yaml
+
+- hosts: registry0
+  gather_facts: yes
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ harbor['dir'] }}"
+  - installer: "harbor-online-installer-{{ harbor['ver'] }}.tgz"
+  tasks:
+  - name: Make sure the dirs exist
+    ansible.builtin.file:
+      path: "{{ item }}"
+      state: directory
+    loop:
+    - "{{ dir }}/data"
+    - "{{ dir }}/log"
+
+  - name: Check harbor installer
+    ansible.builtin.stat:
+      path: "{{ dir }}/{{ installer }}"
+    register: stat_installer
+
+  - name: Download harbor installer
+    ansible.builtin.shell: curl -sLo {{ dir }}/{{ installer }} https://github.com/goharbor/harbor/releases/download/{{ harbor['ver'] }}/{{ installer }} 
+    when: not stat_installer['stat']['exists']
+
+  - name: Check harbor status
+    ansible.builtin.shell: docker compose ls | grep harbor
+    register: grep_harbor
+    failed_when: grep_harbor['rc'] == 2
+
+  - name: Remove previous harbor untar dir
+    become: yes
+    ansible.builtin.file:
+      path: "{{ dir }}/harbor"
+      state: absent
+    when: grep_harbor['rc'] == 1
+
+  - name: Untar harbor installer
+    ansible.builtin.shell: tar -xzf {{ dir }}/{{ installer }} -C {{ dir }}
+    when: grep_harbor['rc'] == 1
+    
+  - name: Copy harbor.yml from template
+    ansible.builtin.copy:
+      remote_src: yes
+      src: "{{ dir }}/harbor/harbor.yml.tmpl"
+      dest: "{{ dir }}/harbor/harbor.yml"
+    when: grep_harbor['rc'] == 1
+ 
+  - name: Configure harbor.yml
+    ansible.builtin.shell: |
+      sed -Ei "s#^(hostname:) ([a-zA-Z0-9/\.]+)#\1 {{ harbor['domain'] }}#" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s/port: 80/port: 10080/" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s/port: 443/port: {{ harbor['port'] }}/" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s#(certificate:) ([a-zA-Z0-9/\.]+)#\1 {{ dir }}/certs/cert.crt#" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s#(private_key:) ([a-zA-Z0-9/\.]+)#\1 {{ dir }}/certs/cert.key#" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s|^# external_url: .*|external_url: https://{{ harbor['external'] }}|" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s#^(data_volume:) ([a-zA-Z0-9/\.]+)#\1 {{ dir }}/data#" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s#^([ $(echo -e '\t')]*location:) ([a-zA-Z0-9/\.]+)#\1 {{ dir }}/log#" {{ dir }}/harbor/harbor.yml
+      sed -Ei "s/^(harbor_admin_password:) ([a-zA-Z0-9]+)/\1 {{ harbor['pw'] }}/" {{ dir }}/harbor/harbor.yml
+    when: grep_harbor['rc'] == 1
+
+  # Some harbor containers may fall into exited states after reboot because of its order dependencies
+  # So, make a systemd unit and use it on reboot
+  - name: Disable running harbor in the install script
+    ansible.builtin.shell: sed -i "s/\$DOCKER_COMPOSE up/#\$DOCKER_COMPOSE up/" {{ dir }}/harbor/install.sh
+    when: grep_harbor['rc'] == 1
+
+  - name: Check harbor-arm images
+    ansible.builtin.shell: |
+      docker_images=$(docker image ls)
+      echo $docker_images | grep -E "goharbor/harbor-log[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/registry-photon[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/harbor-registryctl[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/harbor-db[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/harbor-core[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/harbor-portal[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/harbor-jobservice[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/redis-photon[ $(echo -e '\t')]*dev-arm" && \
+      echo $docker_images | grep -E "goharbor/nginx-photon[ $(echo -e '\t')]*dev-arm"  
+    register: grep_arm
+    when: ansible_facts['architecture'] == 'aarch64'
+    failed_when: grep_arm['rc'] == 2
+
+  - ansible.builtin.import_tasks: wait-apt.yaml
+
+  - name: Install prerequisites for harbor-arm
+    become: yes
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+      - build-essential
+      - docker-compose
+    when:
+    - ansible_facts['architecture'] == 'aarch64'
+    - grep_arm['rc'] == 1
+ 
+  - name: Clone harbor-arm
+    ansible.builtin.shell:
+      chdir: "{{ dir }}"
+      cmd: git clone https://github.com/goharbor/harbor-arm.git
+    when:
+    - ansible_facts['architecture'] == 'aarch64'
+    - grep_arm['rc'] == 1
+   
+  - name: Build harbor-arm images
+    become: yes
+    ansible.builtin.shell:
+      chdir: "{{ dir }}/harbor-arm"
+      cmd: |
+        make download
+        make compile_redis
+        make prepare_arm_data
+        make pre_update
+        make compile COMPILETAG=compile_golangimage
+        make build GOBUILDTAGS="include_oss include_gcs" BUILDBIN=true NOTARYFLAG=false TRIVYFLAG=false CHARTFLAG=false GEN_TLS=true PULL_BASE_FROM_DOCKERHUB=false
+    when:
+    - ansible_facts['architecture'] == 'aarch64'
+    - grep_arm['rc'] == 1
+
+  - name: Change image tag with arm
+    ansible.builtin.shell: sed -Ei "s#(goharbor/prepare):([v.0-9]+)#\1:dev-arm#" {{ dir }}/harbor/prepare
+    when:
+    - ansible_facts['architecture'] == 'aarch64'
+    - grep_arm['rc'] == 1
+
+  - name: Prepare harbor
+    become: yes
+    ansible.builtin.shell: "{{ dir }}/harbor/install.sh"
+    when: grep_harbor['rc'] == 1
+
+# Preserve restart options (harbor-jobservice container may return exit code 2)
+#  - name: Turn restarting off from the docker-compose.yml
+#    ansible.builtin.shell: |
+#      sed -i "s/restart: always/#restart: always/" {{ dir }}/harbor/docker-compose.yml
+
+  - name: Remove previous harbor systemd unit
+    ansible.builtin.file:
+      path: "{{ dir }}/harbor.service"
+      state: absent
+    when: grep_harbor['rc'] == 1
+
+  - name: Make harbor systemd unit
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/harbor.service"
+      create: yes
+      block: |
+        [Unit]
+        Description=Harbor docker compose
+        Requires=docker.service
+        After=docker.service
+        
+        [Service]
+        Type=simple
+        ExecStart=/usr/bin/docker compose -f {{ dir }}/harbor/docker-compose.yml up
+        ExecStop=/usr/bin/docker compose -f {{ dir }}/harbor/docker-compose.yml down
+        
+        [Install]
+        WantedBy=multi-user.target
+    when: grep_harbor['rc'] == 1
+
+  - name: Register harbor.service and start it now
+    become: yes
+    ansible.builtin.shell: systemctl enable {{ dir }}/harbor.service --now
+    when: grep_harbor['rc'] == 1
+
+- hosts: dns0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Append harbor addr to the coredns hosts file
+    ansible.builtin.shell: |
+      grep -E "([0-9]{1,3}.){3}[0-9]{1,3}[ $(echo -e '\t')]+{{ harbor['domain'] }}" {{ coredns['hosts'] }}
+      if [ $? != 0 ]; then
+        echo {{ hostvars['registry0']['ansible_host'] }} {{ harbor['domain'] }} >> {{ coredns['hosts'] }}
+      fi
+      grep -E "([0-9]{1,3}.){3}[0-9]{1,3}[ $(echo -e '\t')]+{{ harbor['external'] }}" {{ coredns['hosts'] }}
+      if [ $? != 0 ]; then
+        echo {{ hostvars['proxy0']['ansible_host'] }} {{ harbor['external'] }} >> {{ coredns['hosts'] }}
+      fi
+
+- name: Connect harbor registry to envoy proxy
+  ansible.builtin.import_playbook: connect-proxy.yaml
+  vars:
+    domain: "{{ harbor['domain'] }}"
+    portnum: "{{ harbor['port'] }}"
+    external: "{{ harbor['external'] }}"
+

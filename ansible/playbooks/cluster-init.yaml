@@ -1,0 +1,71 @@
+---
+# Initialize cluster
+- hosts: cp0
+  gather_facts: yes
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ kubeadm['dir'] }}"
+  tasks:
+  - name: Make sure the dir exists
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Make cluster
+    become: yes
+    ansible.builtin.shell: >
+      srcrepo=$(kubeadm config print init-defaults | grep imageRepository | sed "s/^imageRepository: //") && \
+      kubeadm init \
+        --cri-socket "unix:///run/containerd/containerd.sock" \
+        --apiserver-advertise-address "{{ hostvars['cp0']['ansible_host'] }}" \
+        --image-repository "{{ harbor['prj'] }}/$srcrepo" \
+        --kubernetes-version "{{ kubeadm['cmd_ver'] }}" \
+        --skip-phases "addon/kube-proxy"
+    register: init
+
+  - name: Keep join command
+    ansible.builtin.shell: |
+      echo "{{ init.stdout }}" > "{{ dir }}/init"
+      cat "{{ dir }}/init" | gawk "NR>=$(cat {{ dir }}/init | grep -n 'kubeadm join' | cut -d ':' -f 1)" > "{{ dir }}/join-cmd"
+
+  - name: Copy kube user config
+    ansible.builtin.file:
+      path: ~/.kube
+      state: directory
+
+  - become: yes
+    ansible.builtin.copy:
+      remote_src: yes
+      src: /etc/kubernetes/admin.conf
+      dest: "{{ ansible_env.HOME }}/.kube/config"
+
+  - become: yes
+    ansible.builtin.file:
+      path: "{{ ansible_env.HOME }}/.kube/config"
+      owner: "{{ ansible_env.USER }}"
+      group: "{{ ansible_env.USER }}"
+
+# Join the cluster
+- hosts: cluster:!cp0
+  gather_facts: yes
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ kubeadm['dir'] }}"
+  tasks:
+  - name: Make sure the dir exists
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Copy join cmd
+    ansible.posix.synchronize:
+      src: "{{ dir }}/join-cmd"
+      dest: "{{ dir }}/join-cmd"
+    delegate_to: cp0
+
+  - name: Join the cluster
+    become: yes
+    ansible.builtin.shell: sh "{{ dir }}/join-cmd"
+

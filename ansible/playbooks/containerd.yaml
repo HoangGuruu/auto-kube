@@ -1,0 +1,39 @@
+---
+# Install containerd.io
+- ansible.builtin.package_facts:
+    manager: apt
+
+- ansible.builtin.import_tasks: wait-apt.yaml
+
+- name: Install containerd prerequisites
+  become: yes
+  ansible.builtin.apt:
+    update_cache: yes
+    pkg:
+    - ca-certificates
+    - curl
+    - gnupg
+    - lsb-release
+  when: "'containerd.io' not in ansible_facts.packages"
+
+- name: Add apt repository
+  become: yes
+  ansible.builtin.shell: |
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /usr/share/keyrings/docker-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  when: "'containerd.io' not in ansible_facts.packages"
+
+- name: Update apt cache using command
+  become: yes
+  ansible.builtin.shell: apt update
+  when: "'containerd.io' not in ansible_facts.packages"
+
+- ansible.builtin.import_tasks: wait-apt.yaml
+
+- name: Install container runtime
+  become: yes
+  ansible.builtin.apt:
+    pkg:
+    - containerd.io={{ docker['runtime_ver'] }}
+  when: "'containerd.io' not in ansible_facts.packages"
+

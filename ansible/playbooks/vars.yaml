@@ -1,0 +1,142 @@
+---
+base:
+  dir: "/home/{{ ansible_user }}/.kube-ansible"
+  docker:
+    runtime_ver: 1.6.9
+    engine_ver: 20.10.21
+    compose_ver: 2.12.2
+  coredns:
+    ver: 1.8.7
+  envoy:
+    domain: dn.tld
+    ver: 1.23.1
+    admin_port: 10001
+  harbor:
+    domain: harbor.reg
+    port: 10443
+    ver: 2.6.0
+    pw: admin
+  gitea:
+    domain: gitea.git
+    port: 11443
+    ver: 1.17.2
+    pg_ver: 14
+    nginx_ver: 1.23.1
+    admin_id: gitea
+    admin_pw: gitea1234
+    jenkins_id: jenkins
+    jenkins_pw: jenkins1234
+  jenkins:
+    domain: jenkins.ci
+    port: 12443
+    ver: 2.373-jdk11
+    docker_ver: 20.10.19
+    nginx_ver: 1.23.1
+  kube:
+    ver: 1.24.6
+  cilium:
+    cli:
+      ver: 0.12.4
+    img:
+      ver: 1.12.2
+  metallb:
+    ver: 0.13.5
+    ip_pool: 192.168.0.100-192.168.0.199
+  dashboard:
+    chart_ver: 5.10.0   
+    ip: 192.168.0.199
+  argocd:
+    ver: 2.5.2
+    ip: 192.168.0.198
+
+docker:
+  runtime_ver: "{{ base['docker']['runtime_ver'] }}-1"
+  engine_ver: "5:{{ base['docker']['engine_ver'] }}~3-0~ubuntu-focal"
+  compose_ver: "{{ base['docker']['compose_ver'] }}~ubuntu-focal"
+
+coredns:
+  dir: "{{ base['dir'] }}/dns"
+  data: "{{ base['dir'] }}/dns/data"
+  hosts: "{{ base['dir'] }}/dns/data/hosts"
+  ver: "{{ base['coredns']['ver'] }}"
+
+envoy:
+  dir: "{{ base['dir'] }}/proxy"
+  ver: "v{{ base['envoy']['ver'] }}"
+  domain: "{{ base['envoy']['domain'] }}"
+  alt_names:
+  - "{{ base['envoy']['domain'] }}"
+  - "*.{{ base['envoy']['domain'] }}"
+  admin_port: "{{ base['envoy']['admin_port'] }}"
+
+harbor:
+  dir: "{{ base['dir'] }}/registry"
+  ver: "v{{ base['harbor']['ver'] }}"
+  domain: "{{ base['harbor']['domain'] }}"
+  alt_names: ["{{ base['harbor']['domain'] }}"]
+  port: "{{ base['harbor']['port'] }}"
+  url: "{{ base['harbor']['domain'] }}:{{ base['harbor']['port'] }}" 
+  external: "reg.{{ base['envoy']['domain'] }}"
+  prj: "reg.{{ base['envoy']['domain'] }}/library"
+  pw: "{{ base['harbor']['pw'] }}"
+
+gitea:
+  dir: "{{ base['dir'] }}/scm"
+  ver: "{{ base['gitea']['ver'] }}"
+  domain: "{{ base['gitea']['domain'] }}"
+  alt_names: ["{{ base['gitea']['domain'] }}"]
+  port: "{{ base['gitea']['port'] }}"
+  url: "{{ base['gitea']['domain'] }}:{{ base['gitea']['port'] }}" 
+  external: "git.{{ base['envoy']['domain'] }}"
+  pg_ver: "{{ base['gitea']['pg_ver'] }}"
+  nginx_ver: "{{ base['gitea']['nginx_ver'] }}"
+  admin_id: "{{ base['gitea']['admin_id'] }}"
+  admin_pw: "{{ base['gitea']['admin_pw'] }}"
+  jenkins_id: "{{ base['gitea']['jenkins_id'] }}"
+  jenkins_pw: "{{ base['gitea']['jenkins_pw'] }}"
+
+jenkins:
+  dir: "{{ base['dir'] }}/ci"
+  ver: "{{ base['jenkins']['ver'] }}"
+  domain: "{{ base['jenkins']['domain'] }}"
+  alt_names: ["{{ base['jenkins']['domain'] }}"]
+  port: "{{ base['jenkins']['port'] }}"
+  external: "ci.{{ base['envoy']['domain'] }}"
+  docker_ver: "{{ base['jenkins']['docker_ver'] }}-dind"
+  docker_cli_ver: "5:{{ base['jenkins']['docker_ver'] }}~3-0~debian-bullseye"
+  nginx_ver: "{{ base['jenkins']['nginx_ver'] }}"
+
+containerd:
+  dir: "{{ base['dir'] }}/containerd"
+
+kubelet:
+  apt_ver: "{{ base['kube']['ver'] }}-00"
+
+kubeadm:
+  dir: "{{ base['dir'] }}/kubeadm"
+  apt_ver: "{{ base['kube']['ver'] }}-00"
+  cmd_ver: "v{{ base['kube']['ver'] }}"
+
+kubectl:
+  apt_ver: "{{ base['kube']['ver'] }}-00"
+
+cilium:
+  dir: "{{ base['dir'] }}/cilium"
+  cli_ver: "v{{ base['cilium']['cli']['ver'] }}"
+  img_ver: "{{ base['cilium']['img']['ver'] }}"
+
+metallb:
+  dir: "{{ base['dir'] }}/metallb"
+  ver: "v{{ base['metallb']['ver'] }}" 
+  ip_pool: "{{ base['metallb']['ip_pool'] }}"
+
+dashboard:
+  dir: "{{ base['dir'] }}/dashboard"
+  ver: "{{ base['dashboard']['chart_ver'] }}"
+  ip: "{{ base['dashboard']['ip'] }}"
+
+argocd:
+  dir: "{{ base['dir'] }}/argocd"
+  ver: "v{{ base['argocd']['ver'] }}"
+  ip: "{{ base['argocd']['ip'] }}"
+

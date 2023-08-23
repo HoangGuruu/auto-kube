@@ -1,0 +1,31 @@
+---
+# Clean
+- hosts: cluster
+  gather_facts: no
+  tasks:
+  - name: Reset cluster
+    become: yes
+    ansible.builtin.shell: >
+      kubeadm reset \
+        --force \
+        --cri-socket "unix:///run/containerd/containerd.sock"
+
+  - name: Delete /etc/cni/net.d/*
+    become: yes
+    ansible.builtin.file:
+      path: /etc/cni/net.d
+      state: absent
+
+  - become: yes
+    ansible.builtin.file:
+      path: /etc/cni/net.d
+      state: directory
+
+- hosts: cp0
+  gather_facts: no
+  tasks:
+  - name: Delete ~/.kube
+    ansible.builtin.file:
+      path: ~/.kube
+      state: absent
+

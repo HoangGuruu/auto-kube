@@ -1,0 +1,46 @@
+---
+# Pull Kubernetes images
+- name: Pull kube images
+  ansible.builtin.import_playbook: kube-image.yaml
+
+# Initialize a cluster
+- name: Clean first
+  ansible.builtin.import_playbook: cluster-reset.yaml
+- name: Generate ssh key for sync
+  ansible.builtin.import_playbook: ssh.yaml
+  vars:
+    key_sender: cp0
+    key_receiver: cluster:!cp0
+- name: Initialize cluter
+  ansible.builtin.import_playbook: cluster-init.yaml
+
+# Install Helm
+- name: Install helm
+  ansible.builtin.import_playbook: helm.yaml
+
+# Install Cilium
+- name: Install cilium
+  ansible.builtin.import_playbook: cilium.yaml
+- name: Install cilium CLI
+  ansible.builtin.import_playbook: cilium-cli.yaml
+
+# Install MetalLB
+- name: Install metallb
+  ansible.builtin.import_playbook: metallb.yaml
+- name: Configure metallb
+  ansible.builtin.import_playbook: metallb-conf.yaml
+
+# Install Kubernetes-dashboard
+- name: Install dashboard
+  ansible.builtin.import_playbook: dashboard.yaml
+- name: Configure dashboard
+  ansible.builtin.import_playbook: dashboard-conf.yaml
+
+# Install Argo CD
+- name: Install argo cd
+  ansible.builtin.import_playbook: argocd.yaml
+- name: Configure argo cd
+  ansible.builtin.import_playbook: argocd-conf.yaml
+- name: Apply sample argo cd application
+  ansible.builtin.import_playbook: argocd-sample.yaml
+  

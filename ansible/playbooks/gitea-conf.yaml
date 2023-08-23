@@ -1,0 +1,116 @@
+---
+- hosts: git0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ gitea['dir'] }}"
+  tasks:
+  - name: Initialize gitea database
+    ansible.builtin.shell: |
+      t=0
+      wait=10
+      try=6
+      end=$((wait*try))
+      while [ $t -lt $end ]; do
+        docker exec -u git gitea gitea migrate
+        if [ $? -eq 0 ]; then
+          exit 0
+        fi
+        sleep $wait
+        t=$((t+wait))
+      done
+      echo 'Timeout'
+      exit 1
+
+  - name: Check gitea admin user
+    ansible.builtin.shell: >
+      docker exec -u git gitea gitea admin user list | grep -E "[0-9]+[ $(echo -e '\t')]+gitea[ $(echo -e '\t')]+"
+    register: grep_admin
+    failed_when: grep_admin['rc'] == 2
+
+  - name: Add gitea admin user
+    ansible.builtin.shell: |
+      docker exec -u git gitea gitea admin user create \
+        --username {{ gitea['admin_id'] }} \
+        --password {{ gitea['admin_pw'] }} \
+        --email admin@email.com \
+        --admin 
+    when: grep_admin['rc'] == 1
+
+  - name: Check gitea jenkins user
+    ansible.builtin.shell: >
+      docker exec -u git gitea gitea admin user list | grep -E "[0-9]+[ $(echo -e '\t')]+jenkins[ $(echo -e '\t')]+"
+    register: grep_jenkins
+    failed_when: grep_jenkins['rc'] == 2
+
+  # Grant admin authority to add an organization
+  - name: Add gitea jenkins user
+    ansible.builtin.shell: |
+      docker exec -u git gitea gitea admin user create \
+        --username {{ gitea['jenkins_id'] }} \
+        --password {{ gitea['jenkins_pw'] }} \
+        --email jenkins@email.com \
+        --admin \
+        --access-token \
+        --must-change-password=false | \
+      grep "Access token" | sed "s/Access token was successfully created... //"
+    register: grep_token
+    when: grep_jenkins['rc'] == 1
+
+  # Need to wait for API at first
+  - name: Create a gitea organization for jenkins
+    ansible.builtin.shell: |
+      t=0
+      wait=3
+      try=20
+      end=$((wait*try))
+      while [ $t -lt $end ]; do
+        code=$(curl -kso /dev/null -w %{http_code} \
+          https://{{ gitea['external'] }}/api/v1/orgs?access_token={{ grep_token['stdout'] }} \
+          -H 'accept: application/json' \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "username": "jenkins-automation",
+            "repo_admin_change_team_access": true,
+            "visibility": "public"
+          }')
+        if [ $code -eq 201 ]; then
+          exit 0
+        else
+          sleep $wait
+        fi
+        t=$((t+wait))
+      done
+      exit 1
+    when: grep_token['stdout'] is defined
+
+  - name: Remove admin authority from the user jenkins
+    ansible.builtin.shell: |
+      curl -k https://{{ gitea['external'] }}/api/v1/admin/users/{{ gitea['jenkins_id'] }}?access_token={{ grep_token['stdout'] }} \
+        -X PATCH \
+        -H 'accept: application/json' \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "login_name": "{{ gitea.jenkins_id }}",
+          "admin": false
+        }'
+    when: grep_token['stdout'] is defined
+
+  - name: Keep the access token for later uses
+    ansible.builtin.shell: echo -n "{{ grep_token['stdout'] }}" > "{{ dir }}/token"
+    when: grep_token['stdout'] is defined
+
+  - name: Copy the token to the control machine
+    ansible.builtin.fetch:
+      src: "{{ dir }}/token"
+      dest: ./.keep/gitea-access-token
+      flat: yes
+    when: grep_token['stdout'] is defined
+
+  - name: Remove the old one
+    ansible.builtin.file:
+      path: "{{ dir }}/token"
+      state: absent
+    when: grep_token['stdout'] is defined
+

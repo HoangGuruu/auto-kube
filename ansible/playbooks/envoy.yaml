@@ -1,0 +1,227 @@
+---
+- hosts: proxy0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ envoy['dir'] }}/certs"
+  - cn: "{{ envoy['domain'] }}"
+  - alt_names: "{{ envoy['alt_names'] }}"
+  tasks:
+  - name: Generate cert for envoy
+    ansible.builtin.import_tasks: cert.yaml
+
+- hosts: proxy0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ envoy['dir'] }}"
+  tasks:
+  - name: Make sure the dirs exist
+    ansible.builtin.file:
+      path: "{{ item }}"
+      state: directory
+    loop:
+    - "{{ dir }}/envoy/lds/hosts"
+    - "{{ dir }}/envoy/cds/clusters"
+    - "{{ dir }}/envoy/certs"
+
+  - name: Copy cert into the envoy dir
+    ansible.builtin.copy:
+      remote_src: yes
+      src: "{{ item }}"
+      dest: "{{ dir }}/envoy/certs/"
+    loop:
+    - "{{ dir }}/certs/cert.crt"
+    - "{{ dir }}/certs/cert.key"
+
+  - name: Make envoy.yaml
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/envoy/envoy.yaml"
+      create: yes
+      block: |
+        node:
+          cluster: envoy_cluster
+          id: envoy_id
+        admin:
+          address:
+            socket_address:
+              address: 127.0.0.1
+              port_value: 9901
+        layered_runtime:
+          layers:
+          - name: layer0
+            static_layer:
+              overload:
+                global_downstream_max_connections: 1024
+        dynamic_resources:
+          lds_config:
+            path_config_source:
+              path: /etc/envoy/lds/cur.yaml
+            resource_api_version: V3
+          cds_config:
+            path_config_source:
+              path: /etc/envoy/cds/cur.yaml
+            resource_api_version: V3
+
+  - name: Make envoy cds base file
+    ansible.builtin.copy:
+      dest: "{{ dir }}/envoy/cds/clusters/00-base.yaml"
+      content: |
+        resources:
+
+  - name: Make envoy cds cluster template
+    ansible.builtin.copy:
+      dest: "{{ dir }}/envoy/cds/cluster-template.yaml"
+      content: |
+        - "@type": type.googleapis.com/envoy.config.cluster.v3.Cluster
+          name: $domain
+          connect_timeout: 30s 
+          type: LOGICAL_DNS
+          dns_lookup_family: V4_ONLY
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: $domain
+            endpoints:
+            - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: $domain
+                      port_value: $port
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+
+  - name: Make envoy cds apply script
+    ansible.builtin.copy:
+      dest: "{{ dir }}/envoy/cds/apply.sh"
+      mode: 0774
+      content: |
+        #!/bin/sh
+        cat clusters/* > cds.yaml
+        ln -s cds.yaml temp
+        mv -Tf temp cur.yaml
+
+  - name: Make initial envoy cds
+    ansible.builtin.shell:
+      chdir: "{{ dir }}/envoy/cds"
+      cmd: ./apply.sh
+
+  - name: Make envoy lds base file
+    ansible.builtin.copy:
+      dest: "{{ dir }}/envoy/lds/hosts/00-base.yaml"
+      content: |
+        resources:
+        - "@type": type.googleapis.com/envoy.config.listener.v3.Listener
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 10000
+          filter_chains:
+          - transport_socket:
+              name: envoy.transport_sockets.tls
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                common_tls_context:
+                  tls_certificates:
+                  - certificate_chain:
+                      filename: "/etc/envoy/certs/cert.crt"
+                    private_key:
+                      filename: "/etc/envoy/certs/cert.key"
+            filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                http_filters:
+                - name: envoy.filters.http.router
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  virtual_hosts:
+                  - name: index
+                    domains:
+                    - {{ envoy['domain'] }}
+                    routes:
+                    - match:
+                        prefix: "/"
+                      direct_response:
+                        status: 200
+                        body:
+                          inline_string: Hello
+
+  - name: Make envoy lds host template
+    ansible.builtin.copy:
+      dest: "{{ dir }}/envoy/lds/host-template.yaml"
+      content: |2
+                  - name: $domain
+                    domains:
+                    - $external
+                    routes:
+                    - match:
+                        prefix: "/" 
+                      route:
+                        cluster: $domain
+
+  - name: Make envoy lds apply script
+    ansible.builtin.copy:
+      dest: "{{ dir }}/envoy/lds/apply.sh"
+      mode: 0774
+      content: |
+        #!/bin/sh
+        cat hosts/* > lds.yaml
+        ln -s lds.yaml temp
+        mv -Tf temp cur.yaml
+
+  - name: Make initial envoy lds
+    ansible.builtin.shell:
+      chdir: "{{ dir }}/envoy/lds"
+      cmd: ./apply.sh
+
+  - name: Make envoy docker compose file
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/docker-compose.yaml"
+      create: yes
+      block: |
+        version: "3"
+        services:
+          proxy:
+            container_name: envoy
+            image: envoyproxy/envoy:{{ envoy['ver'] }}
+            restart: always
+            ports:
+            - {{ envoy['admin_port'] }}:9901
+            - 443:10000
+            volumes:
+            - {{ dir }}/envoy:/etc/envoy
+            dns:
+            - {{ hostvars['dns0']['ansible_host'] }}
+            command:
+            - envoy
+            - -c /etc/envoy/envoy.yaml
+            - -l info
+
+  - name: Check envoy
+    ansible.builtin.shell: docker compose -f {{ dir }}/docker-compose.yaml ps | grep envoy
+    register: grep_envoy
+    failed_when: grep_envoy['rc'] == 2
+
+  - name: Run envoy
+    ansible.builtin.shell: docker compose -f {{ dir }}/docker-compose.yaml up -d
+    when: grep_envoy['rc'] == 1
+
+- hosts: dns0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Append envoy addr to the coredns hosts file
+    ansible.builtin.shell: |
+      grep -E "([0-9]{1,3}.){3}[0-9]{1,3}[ $(echo -e '\t')]+{{ envoy['domain'] }}" {{ coredns['hosts'] }}
+      if [ $? != 0 ]; then
+        echo {{ hostvars['proxy0']['ansible_host'] }} {{ envoy['domain'] }} >> {{ coredns['hosts'] }}
+      fi
+

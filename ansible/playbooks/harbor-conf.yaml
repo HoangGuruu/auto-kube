@@ -1,0 +1,152 @@
+---
+- hosts: registry0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ harbor['dir'] }}"
+  tasks:
+  - ansible.builtin.package_facts:
+      manager: apt
+ 
+  - ansible.builtin.import_tasks: wait-apt.yaml
+ 
+  - name: Install jq to parse json
+    become: yes
+    ansible.builtin.apt:
+      update_cache: yes
+      pkg:
+      - jq
+    when: "'jq' not in ansible_facts.packages"
+
+  - name: Wait for harbor to become ready
+    ansible.builtin.shell: |
+      t=0 
+      wait=15
+      try=12
+      end=$((wait*try))
+      while [ $t -lt $end ]; do
+        ready=$(curl -ksu admin:{{ harbor['pw'] }} https://{{ harbor['url'] }}/api/v2.0/health | jq -r .status)
+        if [ "$ready" = "healthy" ]; then
+          exit 0
+        else
+          sleep $wait
+        fi  
+        t=$((t+wait))
+      done
+      exit 1
+
+  - name: Check robot account in harbor
+    ansible.builtin.shell: >
+      curl -ku admin:{{ harbor['pw'] }} https://{{ harbor['url'] }}/api/v2.0/robots | \
+      jq -r .[].name | grep -x 'robot$jenkins'
+    register: grep_robot0
+    failed_when: grep_robot0['rc'] == 2
+
+  - name: Create a jenkins robot in harbor
+    ansible.builtin.shell: |
+      res=$(curl -ku admin:{{ harbor['pw'] }} https://{{ harbor['url'] }}/api/v2.0/robots \
+      -H "accept: application/json" \
+      -H "Content-Type: application/json" \
+      -d '{  
+        "disable": false,
+        "name": "jenkins",  
+        "level": "system",  
+        "duration": -1,
+        "permissions": [
+          {
+            "access": [
+              {"action": "push", "resource": "repository"},
+              {"action": "pull", "resource": "repository"},
+              {"action": "delete", "resource": "artifact"},
+              {"action": "read", "resource": "helm-chart"},
+              {"action": "create", "resource": "helm-chart-version"},
+              {"action": "delete", "resource": "helm-chart-version"},
+              {"action": "create", "resource": "tag"},
+              {"action": "delete", "resource": "tag"},
+              {"action": "create", "resource": "artifact-label"},
+              {"action": "create", "resource": "scan"}
+            ],
+            "kind": "project",
+            "namespace": "*"
+          }
+        ]
+      }')
+      echo $res | jq -r .secret
+    register: robot_jenkins_secret
+    when: grep_robot0['rc'] == 1
+
+  - name: Keep the robot secret
+    ansible.builtin.shell: echo -n {{ robot_jenkins_secret['stdout'] }} > {{ dir }}/harbor-robot-jenkins-secret
+    when: robot_jenkins_secret['stdout'] is defined
+    
+  - name: Copy the secret to the control machine
+    ansible.builtin.fetch:
+      src: "{{ dir }}/harbor-robot-jenkins-secret"
+      dest: ./.keep/
+      flat: yes
+    when: robot_jenkins_secret['stdout'] is defined
+  
+  - name: Remove the old one
+    ansible.builtin.file:
+      path: "{{ dir }}/harbor-robot-jenkins-secret"
+      state: absent
+    when: robot_jenkins_secret['stdout'] is defined
+ 
+  - name: Check robot account in harbor
+    ansible.builtin.shell: >
+      curl -ku admin:{{ harbor['pw'] }} https://{{ harbor['url'] }}/api/v2.0/robots | \
+      jq -r .[].name | grep -x 'robot$kube'
+    register: grep_robot1
+    failed_when: grep_robot1['rc'] == 2
+
+  - name: Create a kube robot in harbor
+    ansible.builtin.shell: |
+      res=$(curl -ku admin:{{ harbor['pw'] }} https://{{ harbor['url'] }}/api/v2.0/robots \
+      -H "accept: application/json" \
+      -H "Content-Type: application/json" \
+      -d '{  
+        "disable": false,
+        "name": "kube",  
+        "level": "system",  
+        "duration": -1,
+        "permissions": [
+          {
+            "access": [
+              {"action": "push", "resource": "repository"},
+              {"action": "pull", "resource": "repository"},
+              {"action": "delete", "resource": "artifact"},
+              {"action": "read", "resource": "helm-chart"},
+              {"action": "create", "resource": "helm-chart-version"},
+              {"action": "delete", "resource": "helm-chart-version"},
+              {"action": "create", "resource": "tag"},
+              {"action": "delete", "resource": "tag"},
+              {"action": "create", "resource": "artifact-label"},
+              {"action": "create", "resource": "scan"}
+            ],
+            "kind": "project",
+            "namespace": "*"
+          }
+        ]
+      }')
+      echo $res | jq -r .secret
+    register: robot_kube_secret
+    when: grep_robot1['rc'] == 1
+
+  - name: Keep the robot secret
+    ansible.builtin.shell: echo -n {{ robot_kube_secret['stdout'] }} > {{ dir }}/harbor-robot-kube-secret
+    when: robot_kube_secret['stdout'] is defined
+    
+  - name: Copy the secret to the control machine
+    ansible.builtin.fetch:
+      src: "{{ dir }}/harbor-robot-kube-secret"
+      dest: ./.keep/
+      flat: yes
+    when: robot_kube_secret['stdout'] is defined
+  
+  - name: Remove the old one
+    ansible.builtin.file:
+      path: "{{ dir }}/harbor-robot-kube-secret"
+      state: absent
+    when: robot_kube_secret['stdout'] is defined
+ 

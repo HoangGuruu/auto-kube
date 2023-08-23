@@ -1,0 +1,47 @@
+---
+# Generate cert
+- name: Make sure the dir exists
+  ansible.builtin.file:
+    path: "{{ dir }}"
+    state: directory
+
+- name: Check cert.key and cert.crt
+  ansible.builtin.find:
+    paths: "{{ dir }}"
+    patterns: 'cert.key,cert.crt'
+  register: certfiles
+
+- name: Generate cert.key
+  ansible.builtin.shell: openssl genrsa -out {{ dir }}/cert.key 2048
+  when: certfiles['matched'] != 2
+
+- name: Change cert.key permissions
+  ansible.builtin.file:
+    path: "{{ dir }}/cert.key"
+    mode: 0664
+
+- name: Generate cert.csr
+  ansible.builtin.shell: openssl req -new -key {{ dir }}/cert.key -out {{ dir }}/cert.csr -subj "/C=KR/O=Organization/CN={{ cn }}"
+  when: certfiles['matched'] != 2
+
+- name: Generate cert.ext
+  ansible.builtin.blockinfile:
+    path: "{{ dir }}/cert.ext"
+    create: yes
+    block: |
+      [ default ]
+      subjectAltName = @alt_names
+      [ alt_names ]
+      #alt_name_by_ansible
+  when: certfiles.matched != 2
+
+- name: Append domain names
+  ansible.builtin.shell: sed -i "s/#alt_name_by_ansible/DNS.{{ i + 1 }} = {{ item }}\n#alt_name_by_ansible/" {{ dir }}/cert.ext
+  loop: "{{ alt_names }}"
+  loop_control:
+    index_var: i
+
+- name: Generate cert.crt
+  ansible.builtin.shell: openssl x509 -req -days 36500 -in {{ dir }}/cert.csr -signkey {{ dir }}/cert.key -extfile {{ dir }}/cert.ext -out {{ dir }}/cert.crt
+  when: certfiles.matched != 2
+

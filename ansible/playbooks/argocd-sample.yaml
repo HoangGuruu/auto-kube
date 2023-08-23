@@ -1,0 +1,18 @@
+---
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ argocd['dir'] }}/conf"
+  tasks:
+  - name: Copy and apply the harbor cert
+    become: yes
+    ansible.builtin.shell: |
+      cp {{ dir }}/gitea.crt /usr/local/share/ca-certificates/
+      update-ca-certificates
+
+  - name: Apply argo cd sample
+    ansible.builtin.shell: >
+      kubectl apply -f https://{{ gitea['external'] }}/jenkins-automation/sample-config/raw/branch/main/myapp-application.yaml
+

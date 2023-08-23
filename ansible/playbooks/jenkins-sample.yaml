@@ -1,0 +1,123 @@
+---
+- hosts: ci0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ jenkins['dir'] }}"
+  - gitea_token: "{{ lookup('file', '.keep/gitea-access-token') }}"
+  tasks:
+  - name: Add proxy cert to git config
+    ansible.builtin.shell: |
+      openssl s_client -connect {{ gitea['external'] }}:443 < /dev/null 2> /dev/null | sed -En '/^-----BEGIN CERTIFICATE-----$/,/^-----END CERTIFICATE-----$/p' > {{ dir }}/proxy.cert
+      git config --global http.sslCAInfo {{ dir }}/proxy.cert
+
+  # Create a sample-config repository for Argo CD
+  - name: Create sample-config repository
+    ansible.builtin.shell: |
+      curl -k https://{{ gitea['external'] }}/api/v1/orgs/jenkins-automation/repos?access_token={{ gitea_token }} \
+        -H 'accept: application/json' \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "auto_init": true,
+          "default_branch": "main",
+          "license": "MIT",
+          "name": "sample-config",
+          "private": false,
+          "template": false,
+          "trust_model": "default"
+        }'
+
+  - name: Clone the repo
+    ansible.builtin.git:
+      repo: https://{{ gitea['external'] }}/jenkins-automation/sample-config.git
+      dest: "{{ dir }}/sample-config"
+      force: yes
+
+  - name: Copy sample-config
+    ansible.builtin.copy:
+      src: sample-config
+      dest: "{{ dir }}/"
+
+  - name: Set HARBOR_URL and GITEA_URL in the configurations
+    ansible.builtin.shell: |
+      sed -i "s/HARBOR_URL/{{ harbor['external'] }}/g" {{ dir }}/sample-config/dev/myapp-deployment.yaml
+      sed -i "s/GITEA_URL/{{ gitea['external'] }}/g" {{ dir }}/sample-config/myapp-application.yaml
+
+  # End of the sample-config repository
+  - name: Add, commit, and push it
+    ansible.builtin.shell:
+      chdir: "{{ dir }}/sample-config"
+      cmd: |
+        git config user.name "{{ gitea['jenkins_id'] }}"
+        git config user.email "jenkins@email.com"
+        git add .
+        git commit -m "Add sample configurations"
+        git push --repo https://{{ gitea['jenkins_id'] }}:{{ gitea['jenkins_pw'] }}@{{ gitea['external'] }}/jenkins-automation/sample-config.git
+
+  # Create a sample repository
+  - name: Create a sample repository
+    ansible.builtin.shell: |
+      curl -k https://{{ gitea['external'] }}/api/v1/orgs/jenkins-automation/repos?access_token={{ gitea_token }} \
+        -H 'accept: application/json' \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "auto_init": true,
+          "default_branch": "main",
+          "license": "MIT",
+          "name": "sample",
+          "private": false,
+          "template": false,
+          "trust_model": "default"
+        }'
+
+  - name: Clone the repo
+    ansible.builtin.git:
+      repo: https://{{ gitea['external'] }}/jenkins-automation/sample.git
+      dest: "{{ dir }}/sample"
+      force: yes
+
+  - name: Copy sample
+    ansible.builtin.copy:
+      src: sample
+      dest: "{{ dir }}/"
+
+  - name: Set HARBOR_URL in Jenkinsfile
+    ansible.builtin.shell: sed -i "s/HARBOR_URL/{{ harbor['external'] }}/g" {{ dir }}/sample/Jenkinsfile
+
+  # End of the sample repository
+  - name: Add, commit, and push it
+    ansible.builtin.shell:
+      chdir: "{{ dir }}/sample"
+      cmd: |
+        git config user.name "{{ gitea['jenkins_id'] }}"
+        git config user.email "jenkins@email.com"
+        git add .
+        git commit -m "Add sample files"
+        git push --repo https://{{ gitea['jenkins_id'] }}:{{ gitea['jenkins_pw'] }}@{{ gitea['external'] }}/jenkins-automation/sample.git
+
+  - vars: 
+      title: "Scan gitea"
+      path: "/job/gitea-folder/build?delay=0 -X POST"
+      code: 302
+    ansible.builtin.import_tasks: wait-jenkins.yaml
+
+  - name: Wait for the first build to be finished
+    ansible.builtin.shell: |
+      pw=$(cat {{ dir }}/jenkins/data/secrets/initialAdminPassword)
+      t=0 
+      wait=10
+      try=18
+      end=$((wait*try))
+      while [ $t -lt $end ]; do
+        result=$(curl -ksu admin:$pw https://{{ jenkins['external'] }}/job/gitea-folder/job/sample/job/main/lastBuild/api/json | jq -r .result)
+        if [ "$result" = "SUCCESS" ]; then
+          exit 0
+        else
+          sleep $wait
+        fi  
+        t=$((t+wait))
+      done
+      echo 'Timeout'
+      exit 1
+

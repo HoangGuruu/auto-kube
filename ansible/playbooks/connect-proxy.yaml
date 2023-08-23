@@ -1,0 +1,44 @@
+---
+- hosts: proxy0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ envoy['dir'] }}"
+  tasks:
+  - name: Check envoy cluster
+    ansible.builtin.shell: grep "{{ domain }}" {{ dir }}/envoy/cds/cur.yaml
+    register: grep_cds
+    failed_when: grep_cds['rc'] == 2
+
+  - name: Add envoy cluster
+    ansible.builtin.shell: |
+      num=$(find {{ dir }}/envoy/cds/clusters -type f | wc -l)
+      fname=$(printf "%02d-cluster.yaml" $num)
+      sed "s/\$domain/{{ domain }}/; s/\$port/{{ portnum }}/" {{ dir }}/envoy/cds/cluster-template.yaml > {{ dir }}/envoy/cds/clusters/$fname
+    when: grep_cds['rc'] == 1
+
+  - name: Apply envoy cluster
+    ansible.builtin.shell:
+      chdir: "{{ dir }}/envoy/cds"
+      cmd: ./apply.sh
+    when: grep_cds['rc'] == 1
+
+  - name: Check envoy host
+    ansible.builtin.shell: grep "{{ domain }}" {{ dir }}/envoy/lds/cur.yaml
+    register: grep_lds
+    failed_when: grep_lds['rc'] == 2
+
+  - name: Add envoy host
+    ansible.builtin.shell: |
+      num=$(find {{ dir }}/envoy/lds/hosts -type f | wc -l)
+      fname=$(printf "%02d-host.yaml" $num)
+      sed "s/\$domain/{{ domain }}/; s/\$external/{{ external }}/" {{ dir }}/envoy/lds/host-template.yaml > {{ dir }}/envoy/lds/hosts/$fname
+    when: grep_lds['rc'] == 1
+      
+  - name: Apply envoy host
+    ansible.builtin.shell:
+      chdir: "{{ dir }}/envoy/lds"
+      cmd: ./apply.sh
+    when: grep_lds['rc'] == 1
+

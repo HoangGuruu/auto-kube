@@ -1,0 +1,60 @@
+---
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ dashboard['dir'] }}/conf"
+  tasks:
+  - name: Make sure the dir exists
+    ansible.builtin.file:
+      path: "{{ dir }}"
+      state: directory
+
+  - name: Make ServiceAccount and ClusterRoleBinding yaml
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/dashboard-conf.yaml"
+      create: yes
+      block: |
+        ---
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: admin-user
+          namespace: kubernetes-dashboard
+
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: admin-user
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: cluster-admin
+        subjects:
+        - kind: ServiceAccount
+          name: admin-user
+          namespace: kubernetes-dashboard        
+
+  - name: Wait for dashboard to become ready
+    ansible.builtin.shell: |
+      t=0
+      wait=15
+      try=6
+      end=$((wait*try))
+      while [ $t -lt $end ]; do
+        ready=$(kubectl get pods -n kubernetes-dashboard --no-headers=true -o custom-columns=:status.containerStatuses[*].ready | sed "s/<none>//g")
+        not_ready=$(echo $ready | grep false)
+        if [ -n "$ready" ] && [ -z "$not_ready" ]; then
+          exit 0
+        else
+          sleep $wait
+        fi
+        t=$((t+wait))
+      done
+      exit 1
+
+  - name: Apply dashboard conf manifest
+    ansible.builtin.shell: kubectl apply -f {{ dir }}/dashboard-conf.yaml
+

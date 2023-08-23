@@ -1,0 +1,37 @@
+---
+- name: Disable swap
+  ansible.builtin.import_playbook: swap.yaml
+
+- hosts: cluster
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Add dns address to the hosts
+    ansible.builtin.import_tasks: add-dns.yaml
+  - name: Install containerd
+    ansible.builtin.import_tasks: containerd.yaml
+
+- hosts: cp0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  tasks:
+  - name: Install docker
+    ansible.builtin.import_tasks: docker.yaml
+
+- name: Generate ssh key for sync
+  ansible.builtin.import_playbook: ssh.yaml
+  vars:
+    key_sender: registry0
+    key_receiver: cluster
+
+- name: Set containerd
+  ansible.builtin.import_playbook: containerd-conf.yaml
+
+- name: Enable kernel modules for container
+  ansible.builtin.import_playbook: kernel-module.yaml
+
+- name: Install kube
+  ansible.builtin.import_playbook: kube.yaml
+

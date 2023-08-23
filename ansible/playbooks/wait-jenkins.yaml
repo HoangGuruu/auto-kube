@@ -1,0 +1,21 @@
+---
+- name: "{{ title }}"
+  ansible.builtin.shell: |
+    t=0 
+    wait=6
+    try=30
+    end=$((wait*try))
+    while [ $t -lt $end ]; do
+      pw=$(cat {{ jenkins['dir'] }}/jenkins/data/secrets/initialAdminPassword)
+      code=$(curl -ksu admin:$pw -o /dev/null -w %{http_code} https://{{ jenkins['external'] }}{{ path }})
+      if [ $code -eq {{ code }} ]; then
+        exit 0
+      else
+        sleep $wait
+      fi  
+      t=$((t+wait))
+    done
+    echo 'Timeout'
+    exit 1
+  
+  

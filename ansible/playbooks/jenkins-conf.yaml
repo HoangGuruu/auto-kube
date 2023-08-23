@@ -1,0 +1,219 @@
+---
+- hosts: ci0
+  gather_facts: no
+  vars_files:
+  - vars.yaml
+  vars:
+  - dir: "{{ jenkins['dir'] }}"
+  - gitea_token: "{{ lookup('file', '.keep/gitea-access-token') }}"
+  - harbor_pw: "{{ lookup('file', '.keep/harbor-robot-jenkins-secret') }}"
+  tasks:
+  - name: Make sure the dirs exist
+    ansible.builtin.file:
+      path: "{{ item }}"
+      state: directory
+    loop:
+    - "{{ dir }}/jenkins/data/casc_configs/init"
+    - "{{ dir }}/jenkins/data/workspace/seed"
+
+  - name: Make initial credentials
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/jenkins/data/casc_configs/init/credentials.yaml"
+      create: yes
+      block: |
+        credentials:
+          system:
+            domainCredentials:
+            - domain:
+                name: "{{ gitea['external'] }}"
+                description: "gitea domain"
+                specifications:
+                - hostnameSpecification:
+                    includes: "{{ gitea['external'] }}"
+              credentials:
+              - giteaAccessToken:
+                  scope: GLOBAL
+                  token: {{ gitea_token }}
+                  id: gitea-credentials
+                  description: "Access authority to Gitea server as jenkins user" 
+            - domain:
+                name: "{{ harbor['external'] }}"
+                description: "harbor domain"
+                specifications:
+                - hostnameSpecification:
+                    includes: "{{ harbor['external'] }}"
+              credentials:
+              - usernamePassword:
+                  scope: GLOBAL
+                  username: "robot$jenkins"
+                  password: {{ harbor_pw }}
+                  id: harbor-credentials
+                  description: "Access authority to Harbor server as jenkins bot" 
+
+  - name: Make initial system settings
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/jenkins/data/casc_configs/init/unclassified.yaml"
+      create: yes
+      block: |
+        unclassified:
+          giteaServers:
+            servers:
+            - displayName: "gitea-server"
+              serverUrl: "https://{{ gitea['external'] }}" 
+              manageHooks: true
+              credentialsId: "gitea-credentials"
+
+  - name: Make initial security settings
+    ansible.builtin.blockinfile:
+      path: "{{ dir }}/jenkins/data/casc_configs/init/security.yaml"
+      create: yes
+      block: |
+        security:
+          # It will be enabled after initialization
+          globalJobDslSecurityConfiguration:
+            useScriptSecurity: false
+
+  - name: Restart jenkins to adapt settings
+    ansible.builtin.shell: |
+      pw=$(cat {{ dir }}/jenkins/data/secrets/initialAdminPassword)
+      docker exec jenkins java -jar /var/jenkins_home/jenkins-cli.jar -s http://localhost:8080 -auth admin:$pw restart
+
+  - vars:
+      title: "Wait for jenkins to become ready"
+      path: "/"
+      code: 200
+    ansible.builtin.import_tasks: wait-jenkins.yaml
+
+  - name: Make seed job configuration file
+    ansible.builtin.copy:
+      dest: "{{ dir }}/jenkins/data/workspace/seed/config.xml"
+      content: |
+        <?xml version='1.1' encoding='UTF-8'?>
+        <project>
+          <actions/>
+          <description></description>
+          <keepDependencies>false</keepDependencies>
+          <properties/>
+          <scm class="hudson.scm.NullSCM"/>
+          <canRoam>true</canRoam>
+          <disabled>false</disabled>
+          <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+          <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+          <authToken>seed-token</authToken>
+          <triggers/>
+          <concurrentBuild>false</concurrentBuild>
+          <builders>
+            <javaposse.jobdsl.plugin.ExecuteDslScripts plugin="job-dsl@1.81">
+              <targets>*.groovy</targets>
+              <usingScriptText>false</usingScriptText>
+              <sandbox>false</sandbox>
+              <ignoreExisting>false</ignoreExisting>
+              <ignoreMissingFiles>false</ignoreMissingFiles>
+              <failOnMissingPlugin>false</failOnMissingPlugin>
+              <failOnSeedCollision>false</failOnSeedCollision>
+              <unstableOnDeprecation>false</unstableOnDeprecation>
+              <removedJobAction>IGNORE</removedJobAction>
+              <removedViewAction>IGNORE</removedViewAction>
+              <removedConfigFilesAction>IGNORE</removedConfigFilesAction>
+              <lookupStrategy>JENKINS_ROOT</lookupStrategy>
+            </javaposse.jobdsl.plugin.ExecuteDslScripts>
+          </builders>
+          <publishers/>
+          <buildWrappers/>
+        </project>
+
+  - name: Make a gitea folder configuration
+    ansible.builtin.copy:
+      dest: "{{ dir }}/jenkins/data/workspace/seed/gitea_org.groovy"
+      content: |
+        organizationFolder('gitea-folder') {
+          displayName('Gitea Folder')
+          organizations {
+            gitea {
+              repoOwner('jenkins-automation')
+              serverUrl("https://{{ gitea['external'] }}")
+              credentialsId('gitea-credentials')
+              traits {
+                giteaBranchDiscovery {
+                  strategyId(0)
+                }
+                giteaPullRequestDiscovery {
+                  strategyId(0)
+                }
+                giteaForkDiscovery {
+                  strategyId(0)
+                  trust {
+                    giteaTrustContributors()
+                  }
+                }
+              }
+            }
+          }
+          triggers {
+            periodicFolderTrigger {
+              interval('1d')
+            }
+          }
+        }
+
+  - name: Create jenkins seed job
+    ansible.builtin.shell: |
+      pw=$(cat {{ dir }}/jenkins/data/secrets/initialAdminPassword)
+      docker exec jenkins sh -c "cat /var/jenkins_home/workspace/seed/config.xml | java -jar /var/jenkins_home/jenkins-cli.jar -s http://localhost:8080 -auth admin:$pw create-job seed"
+
+  - vars: 
+      title: "Build the jenkins seed job"
+      path: "/job/seed/build?token=seed-token" 
+      code: 201
+    ansible.builtin.import_tasks: wait-jenkins.yaml
+
+  - vars:
+      title: "Check folder generation"
+      path: "/job/gitea-folder/"
+      code: 200
+    ansible.builtin.import_tasks: wait-jenkins.yaml
+
+  # It needs to follow two stpes below to make jenkins create webhook
+  #   1. On the jenkins web UI, go to Manage Jenkins > Configure System, then click Apply or Save button
+  #   2. Go to Gitea Folder > Configure, then click Apply or Save button
+  # But, to generate webhook automatically, We request to create it to gitea manually
+  - name: Check webhook on gitea
+    ansible.builtin.shell: |
+      curl -ks https://{{ gitea['external'] }}/api/v1/orgs/jenkins-automation/hooks?access_token={{ gitea_token }} \
+        -H 'accept: application/json' | \
+      jq -r .[].config.url | \
+      grep "https://{{ jenkins['external'] }}/gitea-webhook/post"
+    register: grep_webhook
+    failed_when: grep_webhook['rc'] == 2
+
+  - name: Create a webhook on gitea
+    ansible.builtin.shell: >
+      curl -k https://{{ gitea['external'] }}/api/v1/orgs/jenkins-automation/hooks?access_token={{ gitea_token }} \
+        -H 'accept: application/json' \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "active": true,
+          "branch_filter": "*",
+          "config": {
+            "content_type": "json",
+            "url": "https://{{ jenkins.external }}/gitea-webhook/post"
+          },
+          "events": [
+            "create",
+            "delete",
+            "push",
+            "pull_request",
+            "pull_request_assign",
+            "pull_request_label",
+            "pull_request_milestone",
+            "pull_request_comment",
+            "pull_request_review_approved",
+            "pull_request_review_rejected",
+            "pull_request_review_comment",
+            "pull_request_sync",
+            "repository"
+          ],
+          "type": "gitea"
+        }'
+    when: grep_webhook['rc'] == 1
+
