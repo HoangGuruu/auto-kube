@@ -1,4 +1,4 @@
-# Auto Kube - Install Git/CI/CD/K8s automatically
+# Auto Kube - Install Git/CI/CD/K8s automatically 
 
 Auto Kube is a collection of Ansible playbooks that install Git/CI/CD and Kubernetes On-premise.
 
