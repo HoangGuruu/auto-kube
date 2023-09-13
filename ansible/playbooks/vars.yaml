@@ -41,13 +41,13 @@ base:
       ver: 1.12.2
   metallb:
     ver: 0.13.5
-    ip_pool: 192.168.0.100-192.168.0.199
+    ip_pool: 192.168.56.100-192.168.56.199
   dashboard:
     chart_ver: 5.10.0   
-    ip: 192.168.0.199
+    ip: 192.168.56.199
   argocd:
     ver: 2.5.2
-    ip: 192.168.0.198
+    ip: 192.168.56.198
 
 docker:
   runtime_ver: "{{ base['docker']['runtime_ver'] }}-1"

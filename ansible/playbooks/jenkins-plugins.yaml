@@ -8,19 +8,19 @@
   tasks:
   - name: Download jenkins plugin - Pipeline
     ansible.builtin.shell: >
-      docker exec jenkins jenkins-plugin-cli --plugins workflow-aggregator:590.v6a_d052e5a_a_b_5
+      docker exec jenkins jenkins-plugin-cli --plugins workflow-aggregator:590.v6a_d052e5a_a_b_5 --latest false
 
   - name: Download jenkins plugin - Git
     ansible.builtin.shell: >
-      docker exec jenkins jenkins-plugin-cli --plugins git:4.12.1
+      docker exec jenkins jenkins-plugin-cli --plugins git:4.12.1 --latest false
 
   - name: Download jenkins plugin - Gitea
     ansible.builtin.shell: >
-      docker exec jenkins jenkins-plugin-cli --plugins gitea:1.4.4
+      docker exec jenkins jenkins-plugin-cli --plugins gitea:1.4.4 --latest false
 
   - name: Download jenkins plugin - Configuration as Code
     ansible.builtin.shell: >
-      docker exec jenkins jenkins-plugin-cli --plugins configuration-as-code:1559.v38a_b_2e3b_6b_b_7
+      docker exec jenkins jenkins-plugin-cli --plugins configuration-as-code:1559.v38a_b_2e3b_6b_b_7 --latest false
 
   - name: Make a directory to store configurations
     ansible.builtin.file:
@@ -29,11 +29,11 @@
 
   - name: Download jenkins plugin - Job DSL
     ansible.builtin.shell: >
-      docker exec jenkins jenkins-plugin-cli --plugins job-dsl:1.81
+      docker exec jenkins jenkins-plugin-cli --plugins job-dsl:1.81 --latest false
 
   - name: Download jenkins plugin - Docker Pipeline
     ansible.builtin.shell: >
-      docker exec jenkins jenkins-plugin-cli --plugins docker-workflow:528.v7c193a_0b_e67c
+      docker exec jenkins jenkins-plugin-cli --plugins docker-workflow:528.v7c193a_0b_e67c --latest false
 
   - name: Check jenkins cli tool
     ansible.builtin.stat:

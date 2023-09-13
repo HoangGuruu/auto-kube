@@ -3,8 +3,8 @@
   become: yes
   ansible.builtin.shell: |
     t=0
-    wait=5
-    try=36
+    wait=20
+    try=50
     end=$((wait*try))
     while lsof /var/lib/dpkg/lock-frontend 1> /dev/null; do
       if [ $t -ge $end ]; then

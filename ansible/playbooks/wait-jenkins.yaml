@@ -2,8 +2,8 @@
 - name: "{{ title }}"
   ansible.builtin.shell: |
     t=0 
-    wait=6
-    try=30
+    wait=30
+    try=50
     end=$((wait*try))
     while [ $t -lt $end ]; do
       pw=$(cat {{ jenkins['dir'] }}/jenkins/data/secrets/initialAdminPassword)
