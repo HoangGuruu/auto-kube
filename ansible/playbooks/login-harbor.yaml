@@ -15,8 +15,8 @@
 - name: Wait for harbor to become ready
   ansible.builtin.shell: |
     t=0 
-    wait=15
-    try=12
+    wait=30
+    try=60
     end=$((wait*try))
     while [ $t -lt $end ]; do
       ready=$(curl -ksu 'robot$kube':{{ harbor_pw }} https://{{ harbor['external'] }}/api/v2.0/health | jq -r .status)
