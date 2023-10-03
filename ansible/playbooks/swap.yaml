@@ -6,6 +6,8 @@
   - name: Check swapping
     ansible.builtin.shell: cat /etc/fstab | grep swap
     register: fstab_swap
+    failed_when: fstab_swap.rc not in [0, 1]
+    changed_when: false
 
   - name: Disable swapping
     become: yes

@@ -19,7 +19,7 @@ def makeSSHCommand() -> list:
     ssharg = []
     if inv['cluster']['hosts']['cp0'].get('ansible_ssh_common_args'):
         ssharg = inv['cluster']['hosts']['cp0']['ansible_ssh_common_args'].split()
-    return ['ssh'] + ssharg + [user + '@' + host]
+    return ['ssh'] + ['ubuntu' + '@' + host] + ['-i'] + ['~/.ssh/ansible_key']
 
 def genDashboardToekn(inv: dict) -> str:
     # Make ssh command
