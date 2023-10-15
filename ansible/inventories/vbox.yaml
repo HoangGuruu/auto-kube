@@ -3,40 +3,40 @@
 dns:
   hosts:
     dns0:
-      ansible_host: 10.2.0.141
+      ansible_host: 10.2.1.34
       ansible_user: ubuntu
 
 proxy:
   hosts:
     proxy0:
-      ansible_host: 10.2.0.141
+      ansible_host: 10.2.1.34
       ansible_user: ubuntu
 
 registry:
   hosts:
     registry0:
-      ansible_host: 10.2.0.141
+      ansible_host: 10.2.1.34
       ansible_user: ubuntu
 
 git:
   hosts:
     git0:
-      ansible_host: 10.2.0.141
+      ansible_host: 10.2.1.34
       ansible_user: ubuntu
 
 ci:
   hosts:
     ci0:
-      ansible_host: 10.2.0.141
+      ansible_host: 10.2.1.34
       ansible_user: ubuntu
 
 cluster:
   hosts:
     cp0:
-      ansible_host: 10.2.0.156
+      ansible_host: 10.2.1.25
       ansible_user: ubuntu
     node1:
-      ansible_host: 10.2.0.123
+      ansible_host: 10.2.1.142
       ansible_user: ubuntu
 
 all:
